@@ -37,10 +37,11 @@ def test_top_and_bottom_rows_map_to_inverted_cell_centers():
 
     strokes = StrokeGenerator().generate(image).plan.strokes
 
-    assert strokes[0].start == Point(1.0, 7.75)
-    assert strokes[0].end == Point(10.0, 7.75)
-    assert strokes[1].start == Point(1.0, 3.25)
-    assert strokes[1].end == Point(10.0, 3.25)
+    by_color = {stroke.color: stroke for stroke in strokes}
+    assert by_color[RED].start == Point(1.0, 7.75)
+    assert by_color[RED].end == Point(10.0, 7.75)
+    assert by_color[BLUE].start == Point(1.0, 3.25)
+    assert by_color[BLUE].end == Point(10.0, 3.25)
 
 
 @pytest.mark.parametrize(
@@ -111,10 +112,107 @@ def test_row_wise_runs_merge_only_consecutive_equal_pixels():
     strokes = StrokeGenerator().generate(image).plan.strokes
 
     assert [stroke.color for stroke in strokes] == [
-        RED, BLUE, RED, RED, BLUE, RED,
+        RED, RED, RED, RED, BLUE, BLUE,
     ]
     lengths = [stroke.end.x - stroke.start.x for stroke in strokes]
-    assert lengths == pytest.approx([4.5, 2.25, 2.25, 4.5, 2.25, 2.25])
+    assert lengths == pytest.approx([4.5, 2.25, 4.5, 2.25, 2.25, 2.25])
+
+
+def test_largest_first_groups_colors_by_painted_pixel_count():
+    """Colors are contiguous and ranked by emitted painted area."""
+    green = Color(0, 255, 0)
+    image = make_image((
+        (RED, RED, RED, BLUE),
+        (RED, BLUE, green, green),
+    ), background=green)
+
+    result = StrokeGenerator().generate(image)
+    colors = [stroke.color for stroke in result.plan.strokes]
+
+    assert colors == [RED, RED, BLUE, BLUE]
+    assert result.statistics.skipped_pixels == 2
+
+
+def test_largest_first_breaks_ties_by_rgb():
+    """Equal painted counts use ascending RGB rather than discovery order."""
+    image = make_image(((RED, RED, BLUE, BLUE),))
+
+    colors = [
+        stroke.color for stroke in StrokeGenerator().generate(image).plan.strokes
+    ]
+
+    assert colors == [BLUE, RED]
+
+
+def test_raster_orders_each_color_top_to_bottom_left_to_right():
+    """Raster order uses logical row and column positions within a group."""
+    image = make_image((
+        (RED, BLUE, RED),
+        (RED, BLUE, RED),
+    ))
+
+    red_strokes = [
+        stroke for stroke in StrokeGenerator().generate(image).plan.strokes
+        if stroke.color == RED
+    ]
+
+    assert [stroke.start.y for stroke in red_strokes] == [7.0, 7.0, 4.0, 4.0]
+    assert red_strokes[0].start.x < red_strokes[1].start.x
+    assert red_strokes[2].start.x < red_strokes[3].start.x
+
+
+def test_snake_reverses_order_and_endpoints_on_odd_source_rows():
+    """Odd image rows travel right-to-left regardless of color gaps."""
+    image = make_image((
+        (RED, BLUE, RED),
+        (RED, BLUE, RED),
+    ))
+
+    red_strokes = [
+        stroke
+        for stroke in StrokeGenerator(path_order='snake').generate(
+            image).plan.strokes
+        if stroke.color == RED
+    ]
+
+    assert red_strokes[0].start.x < red_strokes[0].end.x
+    assert red_strokes[0].start.x < red_strokes[1].start.x
+    assert red_strokes[2].start.x > red_strokes[2].end.x
+    assert red_strokes[2].start.x > red_strokes[3].start.x
+
+
+def test_distances_follow_final_execution_order():
+    """Paint and pen-up travel are measured after color ordering."""
+    image = make_image(((RED, BLUE),))
+
+    statistics = StrokeGenerator().generate(image).statistics
+
+    assert statistics.paint_distance == pytest.approx(9.0)
+    assert statistics.travel_distance == pytest.approx(9.0)
+    assert statistics.total_distance == pytest.approx(18.0)
+
+
+def test_single_stroke_has_no_initial_travel():
+    """No starting turtle pose contributes to planned travel."""
+    statistics = StrokeGenerator().generate(
+        make_image(((RED,),))).statistics
+
+    assert statistics.paint_distance == pytest.approx(9.0)
+    assert statistics.travel_distance == 0.0
+    assert statistics.total_distance == pytest.approx(9.0)
+
+
+@pytest.mark.parametrize(
+    'options,message',
+    [
+        ({'color_order': 'random'}, 'largest_first'),
+        ({'path_order': 'diagonal'}, 'raster, snake'),
+    ],
+)
+def test_generator_rejects_unsupported_strategies(options, message):
+    """Strategy errors name the accepted public values."""
+    with pytest.raises(StrokeGenerationError, match=message):
+        StrokeGenerator(**options)
 
 
 def test_background_exclusion_can_produce_an_empty_plan():

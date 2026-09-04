@@ -1,7 +1,7 @@
 """Shared immutable data models for processing and painting images."""
 
 from dataclasses import dataclass, field
-from math import isfinite
+from math import isclose, isfinite
 from numbers import Real
 from typing import Optional, Tuple
 
@@ -148,6 +148,9 @@ class Statistics:
     skipped_pixels: int = 0
     elapsed_seconds: float = 0.0
     color_counts: Tuple[Tuple[Color, int], ...] = field(default_factory=tuple)
+    paint_distance: float = 0.0
+    travel_distance: float = 0.0
+    total_distance: float = 0.0
 
     def __post_init__(self) -> None:
         """Reject negative measurements and color counts."""
@@ -157,11 +160,22 @@ class Statistics:
             self.stroke_count,
             self.skipped_pixels,
             self.elapsed_seconds,
+            self.paint_distance,
+            self.travel_distance,
+            self.total_distance,
         )
-        if any(value < 0 for value in measurements):
-            raise ValueError('statistics measurements must not be negative')
+        if any(value < 0 or not isfinite(value) for value in measurements):
+            raise ValueError(
+                'statistics measurements must be finite and nonnegative')
         if any(count < 0 for _, count in self.color_counts):
             raise ValueError('color counts must not be negative')
+        if not isclose(
+            self.total_distance,
+            self.paint_distance + self.travel_distance,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError('total distance must equal paint plus travel')
 
 
 @dataclass(frozen=True)
@@ -170,3 +184,13 @@ class PlanResult:
 
     plan: PaintingPlan
     statistics: Statistics
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    """The products written by the complete image-to-plan pipeline."""
+
+    processed_image: ProcessedImage
+    plan_result: PlanResult
+    plan_path: str
+    preview_path: str

@@ -5,6 +5,7 @@ from .models import (
     CanvasBounds,
     Color,
     PaintingPlan,
+    PipelineResult,
     PlanResult,
     Point,
     ProcessedImage,
@@ -12,6 +13,8 @@ from .models import (
     Statistics,
     Stroke,
 )
+from .pipeline import PaintingPipeline
+from .preview import PreviewGenerator
 from .stroke_generation import StrokeGenerationError, StrokeGenerator
 
 __all__ = [
@@ -20,10 +23,13 @@ __all__ = [
     'ImageProcessingError',
     'ImageProcessor',
     'PaintingPlan',
+    'PaintingPipeline',
+    'PipelineResult',
     'PlanResult',
     'Point',
     'ProcessedImage',
     'Progress',
+    'PreviewGenerator',
     'Statistics',
     'Stroke',
     'StrokeGenerationError',

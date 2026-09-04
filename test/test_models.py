@@ -72,6 +72,16 @@ def test_statistics_rejects_negative_measurements():
         Statistics(stroke_count=-1)
 
 
+def test_statistics_requires_consistent_total_distance():
+    """Stored aggregate distance agrees with its two components."""
+    with pytest.raises(ValueError):
+        Statistics(
+            paint_distance=2.0,
+            travel_distance=3.0,
+            total_distance=4.0,
+        )
+
+
 def test_statistics_rejects_negative_color_counts():
     """Per-color statistics cannot contain a negative count."""
     with pytest.raises(ValueError):

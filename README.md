@@ -41,6 +41,20 @@ rows are mapped from top to bottom by inverting the Turtlesim Y-axis, and each
 maximal horizontal run of one color becomes a stroke spanning the complete
 logical cell edges. Detected background runs are skipped by default.
 
+The standalone command runs the complete planning pipeline and writes a JSON
+painting plan plus a composite PNG preview next to the input image:
+
+```bash
+process_image picture.png --path-order snake
+```
+
+The default artifacts are `picture_plan.json` and `picture_preview.png`. Use
+`--plan-output` and `--preview-output` to choose other paths. Colors are grouped
+largest-first by painted pixel count with RGB tie-breaking. Raster order scans
+each group from top-left; snake order reverses both run order and stroke
+endpoints on odd source rows. Reported travel covers pen-up movement between
+strokes, while paint distance covers the strokes themselves.
+
 Inputs are EXIF-oriented, converted to RGB, composited over white when they
 contain transparency, resized without changing aspect ratio, and quantized
 using median cut. The default ROS parameters are in `config/default.yaml`.

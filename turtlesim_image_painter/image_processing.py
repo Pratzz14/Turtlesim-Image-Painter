@@ -133,6 +133,15 @@ class ImageProcessor:
         resized = self.resize_image(
             loaded, max_width, max_height, allow_upscale=allow_upscale)
         quantized = self.quantize_image(resized, palette_size)
+        return self.to_processed_image(quantized, background_threshold)
+
+    def to_processed_image(
+        self,
+        quantized: Image.Image,
+        background_threshold: float = 0.5,
+    ) -> ProcessedImage:
+        """Convert a quantized Pillow image into the immutable core model."""
+        quantized = quantized.convert('RGB')
         raw_pixels = list(quantized.getdata())
         colors = tuple(Color.from_tuple(value) for value in raw_pixels)
         rows: PixelMatrix = tuple(
