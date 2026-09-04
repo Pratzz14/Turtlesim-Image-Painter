@@ -1,0 +1,8 @@
+turtlesim_image_painter:
+  ros__parameters:
+    max_width: 64
+    max_height: 64
+    palette_size: 8
+    transparency_color: [255, 255, 255]
+    background_threshold: 0.5
+    allow_upscale: false

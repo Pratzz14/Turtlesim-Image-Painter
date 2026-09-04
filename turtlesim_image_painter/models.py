@@ -1,0 +1,139 @@
+"""Shared immutable data models for processing and painting images."""
+
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
+
+
+@dataclass(frozen=True, order=True)
+class Color:
+    """An eight-bit RGB color."""
+
+    red: int
+    green: int
+    blue: int
+
+    def __post_init__(self) -> None:
+        """Reject channel values outside the RGB range."""
+        for channel in (self.red, self.green, self.blue):
+            if not isinstance(channel, int) or isinstance(channel, bool):
+                raise TypeError('RGB channels must be integers')
+            if not 0 <= channel <= 255:
+                raise ValueError('RGB channels must be between 0 and 255')
+
+    @classmethod
+    def from_tuple(cls, value: Tuple[int, int, int]) -> 'Color':
+        """Build a color from a Pillow-style tuple."""
+        return cls(*value)
+
+    def as_tuple(self) -> Tuple[int, int, int]:
+        """Return a Pillow-style RGB tuple."""
+        return self.red, self.green, self.blue
+
+
+PixelMatrix = Tuple[Tuple[Color, ...], ...]
+
+
+@dataclass(frozen=True)
+class ProcessedImage:
+    """A quantized image represented as rows of RGB pixels."""
+
+    width: int
+    height: int
+    pixels: PixelMatrix
+    palette: Tuple[Color, ...]
+    background: Optional[Color] = None
+
+    def __post_init__(self) -> None:
+        """Ensure dimensions and palette agree with the pixel matrix."""
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError('image dimensions must be positive')
+        if len(self.pixels) != self.height:
+            raise ValueError('pixel rows do not match image height')
+        if any(len(row) != self.width for row in self.pixels):
+            raise ValueError('pixel columns do not match image width')
+        if not self.palette:
+            raise ValueError('image palette must not be empty')
+        palette_colors = set(self.palette)
+        if len(palette_colors) != len(self.palette):
+            raise ValueError('image palette must not contain duplicates')
+        pixel_colors = {color for row in self.pixels for color in row}
+        if pixel_colors != palette_colors:
+            raise ValueError('image palette must exactly match its pixel colors')
+        if self.background is not None and self.background not in palette_colors:
+            raise ValueError('background must be present in the image palette')
+
+
+@dataclass(frozen=True)
+class Point:
+    """A point in turtlesim canvas coordinates."""
+
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
+class Stroke:
+    """One colored line segment in a painting plan."""
+
+    start: Point
+    end: Point
+    color: Color
+
+
+@dataclass(frozen=True)
+class PaintingPlan:
+    """An ordered collection of strokes generated for an image."""
+
+    strokes: Tuple[Stroke, ...]
+    width: int
+    height: int
+    background: Optional[Color] = None
+
+    def __post_init__(self) -> None:
+        """Reject nonpositive canvas dimensions."""
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError('plan dimensions must be positive')
+
+
+@dataclass(frozen=True)
+class Progress:
+    """Painting progress expressed as completed and total strokes."""
+
+    completed: int
+    total: int
+
+    def __post_init__(self) -> None:
+        """Validate progress counters."""
+        if self.total < 0 or not 0 <= self.completed <= self.total:
+            raise ValueError('progress must satisfy 0 <= completed <= total')
+
+    @property
+    def fraction(self) -> float:
+        """Return completion in the inclusive range zero to one."""
+        return self.completed / self.total if self.total else 1.0
+
+
+@dataclass(frozen=True)
+class Statistics:
+    """Summary measurements for a generated or executed plan."""
+
+    pixel_count: int = 0
+    palette_size: int = 0
+    stroke_count: int = 0
+    skipped_pixels: int = 0
+    elapsed_seconds: float = 0.0
+    color_counts: Tuple[Tuple[Color, int], ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        """Reject negative measurements and color counts."""
+        measurements = (
+            self.pixel_count,
+            self.palette_size,
+            self.stroke_count,
+            self.skipped_pixels,
+            self.elapsed_seconds,
+        )
+        if any(value < 0 for value in measurements):
+            raise ValueError('statistics measurements must not be negative')
+        if any(count < 0 for _, count in self.color_counts):
+            raise ValueError('color counts must not be negative')
