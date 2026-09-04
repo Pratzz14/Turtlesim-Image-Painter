@@ -42,17 +42,17 @@ from std_srvs.srv import Empty
 from turtlesim.msg import Pose
 from turtlesim.srv import SetPen, TeleportAbsolute
 
+from .configuration import PainterConfig
 from .image_processing import ImageProcessor
 from .models import Color, PaintingPlan, Point
-from .pipeline import PaintingPipeline
-from .turtle_control import (
+from .motion_control import (
     alignment_command,
     angle_arrived,
     drive_command,
     heading_between,
-    PainterConfig,
     position_arrived,
 )
+from .pipeline import PaintingPipeline
 
 
 class PainterState(Enum):
@@ -162,6 +162,9 @@ class PainterNode(Node):
             self.destroy_node()
             raise
 
+        # This block is a compact survey of the main ROS 2 communication
+        # styles: commands are published, feedback is subscribed to, and
+        # discrete operations use request/response services.
         self._velocity_publisher = self.create_publisher(
             Twist, '/turtle1/cmd_vel', 10)
         self._pose_subscription = self.create_subscription(
@@ -172,6 +175,8 @@ class PainterNode(Node):
         self._clear_client = self.create_client(Empty, '/clear')
         self._parameter_client = AsyncParameterClient(self, '/turtlesim')
 
+        # Pillow processing and file output can take much longer than one timer
+        # period. They run off-executor so pose and service callbacks stay live.
         self._pipeline = pipeline or PaintingPipeline(
             processor=ImageProcessor(self.config.transparency_color),
             bounds=self.config.bounds,
@@ -217,6 +222,8 @@ class PainterNode(Node):
         """Declare all node parameters and return their validated snapshot."""
         values = {}
         for name, default in PainterConfig.defaults().items():
+            # ROS parameter arrays are represented by lists at declaration;
+            # PainterConfig converts this one back to an immutable tuple.
             if name == 'transparency_color':
                 default = list(default)
             values[name] = self.declare_parameter(name, default).value
@@ -226,6 +233,8 @@ class PainterNode(Node):
         """Record the freshest turtle pose without advancing execution."""
         self._pose = pose
         self._pose_time = self._monotonic()
+        # A generation counter proves that a pose arrived after a teleport.
+        # Timestamp freshness alone cannot distinguish a pre-teleport sample.
         self._pose_generation += 1
 
     def _pose_is_fresh(self) -> bool:
@@ -258,6 +267,9 @@ class PainterNode(Node):
         self._phase = ''
         self._future = None
         now = self._monotonic()
+        # Every state is bounded. Movement gets a motion deadline, layer
+        # changes get a pause deadline, and service-oriented states use the
+        # service deadline.
         if state in (PainterState.ALIGNING, PainterState.DRAWING):
             self._state_deadline = now + self.config.movement_timeout_sec
         elif state == PainterState.COLOR_CHANGE:
@@ -462,6 +474,8 @@ class PainterNode(Node):
             return
 
         if self._phase == 'planning':
+            # Polling a Future keeps this timer callback non-blocking. The ROS
+            # executor is free to deliver pose and service callbacks meanwhile.
             if not self._planning_future.done():
                 return
             try:
@@ -563,6 +577,8 @@ class PainterNode(Node):
             request.x = target.x
             request.y = target.y
             request.theta = self._pose.theta
+            # Save the latest observed sample before sending the request. The
+            # transition only succeeds after a newer matching pose is received.
             self._teleport_pose_generation = self._pose_generation
             if self._start_service(
                 'teleporting turtle',
@@ -799,6 +815,8 @@ class PainterNode(Node):
     def _tick_error(self) -> None:
         """Attempt one bounded pen-off request, then finish in ERROR."""
         if not self._error_cleanup_started:
+            # Cleanup is deliberately best-effort: a failed painter must never
+            # wait forever for the same service graph that caused the failure.
             self._error_cleanup_started = True
             if not self._pen_client.service_is_ready():
                 self._finish_failure()

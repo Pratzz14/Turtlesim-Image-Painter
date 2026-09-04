@@ -4,9 +4,14 @@ Any contribution that you make to this repository will
 be under the MIT license, as dictated by that
 [license](https://opensource.org/licenses/MIT).
 
-Keep image processing and stroke generation independent of ROS where possible,
-preserve the painter's non-blocking state machine and safety timeouts, and add
-tests for every behavior change.
+Keep image processing, stroke generation, configuration validation, and motion
+math independent of ROS. Preserve the painter's non-blocking state machine and
+safety timeouts, and add tests for every behavior change.
+
+Use comments to explain non-obvious intent—callback ownership, asynchronous
+sequencing, safety decisions, and coordinate transforms—not to restate the
+syntax. Put longer conceptual explanations and runnable lessons in `docs/`,
+and link new guides from `docs/README.md`.
 
 Before submitting a change, run from the ROS 2 workspace root:
 

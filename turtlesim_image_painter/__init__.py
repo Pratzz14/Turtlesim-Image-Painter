@@ -20,6 +20,7 @@
 
 """Turn raster images into compact painting plans for ROS 2 turtlesim."""
 
+from .configuration import PainterConfig
 from .image_processing import ImageProcessingError, ImageProcessor
 from .models import (
     CanvasBounds,
@@ -33,6 +34,7 @@ from .models import (
     Statistics,
     Stroke,
 )
+from .motion_control import VelocityCommand
 from .pipeline import PaintingPipeline
 from .preview import PreviewGenerator
 from .stroke_generation import StrokeGenerationError, StrokeGenerator
@@ -44,6 +46,7 @@ __all__ = [
     'ImageProcessor',
     'PaintingPlan',
     'PaintingPipeline',
+    'PainterConfig',
     'PipelineResult',
     'PlanResult',
     'Point',
@@ -54,4 +57,5 @@ __all__ = [
     'Stroke',
     'StrokeGenerationError',
     'StrokeGenerator',
+    'VelocityCommand',
 ]

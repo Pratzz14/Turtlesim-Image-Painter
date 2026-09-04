@@ -66,6 +66,8 @@ def _painter_parameter_overrides(image, colors='', resolution=''):
 
 def _launch_painter(context):
     """Create the painter after resolving and validating launch arguments."""
+    # Launch substitutions are lazy. OpaqueFunction calls this only after a
+    # LaunchContext exists, when argument strings can be resolved and checked.
     parameters = _painter_parameter_overrides(
         LaunchConfiguration('image').perform(context),
         LaunchConfiguration('colors').perform(context),
@@ -81,6 +83,8 @@ def _launch_painter(context):
         executable='painter',
         name='painter',
         output='screen',
+        # Later parameter dictionaries override the earlier YAML file. This
+        # lets the small public launch interface retain all YAML defaults.
         parameters=[str(configuration), parameters],
     )]
 

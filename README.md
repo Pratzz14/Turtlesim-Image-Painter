@@ -6,6 +6,14 @@ the standard turtlesim turtle to paint the result. One launch command starts
 the simulator and painter, writes an inspectable JSON plan and PNG preview,
 prints progress as the picture is drawn, and leaves the finished canvas open.
 
+## Learn ROS 2 with this repository
+
+The source is organized as a guided ROS 2 project, from pure Python planning
+through topics, services, parameters, timers, feedback control, and safe
+shutdown. Start with the ordered [ROS 2 Learning Guide](docs/README.md). It
+includes architecture explanations, graph-inspection commands, controller
+walkthroughs, testing techniques, and progressively harder exercises.
+
 ## How it works
 
 The project separates image processing from ROS control so each stage can be
@@ -27,6 +35,8 @@ PNG/JPEG
 `pipeline.py` writes the plan and preview atomically. `painter.py` is a
 timer-driven ROS node: image processing runs in a worker thread, while service,
 pose, and velocity operations remain non-blocking in the ROS executor.
+Configuration validation lives separately in `configuration.py`, and
+ROS-independent controller math lives in `motion_control.py`.
 
 The generated distance values are planned canvas-space distances. Paint
 distance is the sum of stroke lengths; travel distance covers pen-up movement

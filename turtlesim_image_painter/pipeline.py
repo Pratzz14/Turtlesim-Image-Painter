@@ -182,6 +182,8 @@ class PaintingPipeline:
         try:
             temporary_preview = self._temporary_path(preview_path)
             try:
+                # Finish both temporary artifacts before replacing either user
+                # destination. os.replace then makes each final update atomic.
                 temporary_plan.write_text(
                     json.dumps(
                         _plan_document(

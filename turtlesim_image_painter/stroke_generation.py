@@ -327,6 +327,8 @@ class StrokeGenerator:
             canvas_width / image.width,
             canvas_height / image.height,
         )
+        # One uniform scale preserves the source aspect ratio. Any unused strip
+        # of canvas is split equally so portrait and landscape images center.
         painted_width = image.width * scale
         painted_height = image.height * scale
         left = bounds.min_x + (canvas_width - painted_width) / 2.0
@@ -347,6 +349,8 @@ class StrokeGenerator:
 
         horizontal_runs = self._horizontal_runs(image, left, bottom, scale)
         vertical_runs = self._vertical_runs(image, left, bottom, scale)
+        # Generate both candidates once. Auto mode can then compare plans per
+        # color without mixing geometric construction with route selection.
         horizontal = {
             color: self._ordered_strokes(runs)
             for color, runs in horizontal_runs.items()

@@ -21,20 +21,22 @@
 """Tests for pure turtlesim feedback-control behavior."""
 
 from math import pi
+from pathlib import Path
 
 import pytest
 
+from turtlesim_image_painter.configuration import PainterConfig
 from turtlesim_image_painter.models import Point
-from turtlesim_image_painter.turtle_control import (
+from turtlesim_image_painter.motion_control import (
     alignment_command,
     angle_arrived,
     distance_between,
     drive_command,
     heading_between,
     normalize_angle,
-    PainterConfig,
     position_arrived,
 )
+import yaml
 
 
 def test_default_configuration_describes_image_painter():
@@ -61,6 +63,17 @@ def test_default_configuration_describes_image_painter():
         config.background_b,
     ) == (255, 255, 255)
     assert not config.dry_run
+
+
+def test_yaml_defaults_match_validated_configuration():
+    """Installed-style YAML defaults stay aligned with the Python contract."""
+    config_path = Path(__file__).parents[1] / 'config' / 'default.yaml'
+    document = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+    yaml_defaults = document['painter']['ros__parameters']
+    expected = dict(PainterConfig.defaults())
+    expected['transparency_color'] = list(expected['transparency_color'])
+
+    assert yaml_defaults == expected
 
 
 @pytest.mark.parametrize(

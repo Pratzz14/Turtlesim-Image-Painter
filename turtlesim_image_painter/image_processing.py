@@ -141,6 +141,8 @@ class ImageProcessor:
         background_value = background.as_tuple()
         mask = []
         foreground_pixels = []
+        # Reserve the detected background instead of asking median-cut to spend
+        # one of its limited palette entries rediscovering near-identical tones.
         for pixel in rgb_image.getdata():
             is_background = max(
                 abs(channel - reference)
@@ -200,6 +202,8 @@ class ImageProcessor:
             loaded, max_width, max_height, allow_upscale=allow_upscale)
         background = self.detect_dominant_background(
             resized, background_threshold)
+        # Detect before quantization so the quantizer cannot invent a dominant
+        # color and then have it mistaken for the source background.
         quantized = self.quantize_image(
             resized,
             palette_size,

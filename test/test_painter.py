@@ -41,8 +41,8 @@ from turtlesim_image_painter import (
     Stroke,
 )
 from turtlesim_image_painter import painter
+from turtlesim_image_painter.configuration import PainterConfig
 from turtlesim_image_painter.painter import PainterNode, PainterState
-from turtlesim_image_painter.turtle_control import PainterConfig
 
 
 RED = Color(255, 0, 0)
