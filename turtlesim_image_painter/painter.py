@@ -1,3 +1,23 @@
+# Copyright 2026 Pratik Mahankal
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 """Timer-driven ROS 2 node for painting a complete image plan."""
 
 from concurrent.futures import Future
@@ -171,6 +191,14 @@ class PainterNode(Node):
         self._teleport_pose_generation = 0
         self._parking_pose_generation = 0
         self._plan: Optional[PaintingPlan] = None
+        self._pipeline_result = None
+        self._statistics = None
+        self._painted_colors = ()
+        self._color_stroke_totals = {}
+        self._color_pixel_counts = {}
+        self._logged_color = None
+        self._completed_color_strokes = 0
+        self._started_at: Optional[float] = None
         self._planning_future = None
         self._future = None
         self._phase = ''
@@ -237,6 +265,103 @@ class PainterNode(Node):
         else:
             self._state_deadline = now + self.config.service_timeout_sec
         self.get_logger().info('Painter state: %s' % state.name.lower())
+        if state == PainterState.MOVING_TO_STROKE:
+            self._log_current_color()
+
+    def _prepare_progress(self, result) -> None:
+        """Cache pipeline metadata used by progress and final reporting."""
+        self._pipeline_result = result
+        self._statistics = result.plan_result.statistics
+        self._painted_colors = tuple(dict.fromkeys(
+            stroke.color for stroke in self._plan.strokes
+        ))
+        self._color_stroke_totals = {
+            color: sum(
+                stroke.color == color for stroke in self._plan.strokes)
+            for color in self._painted_colors
+        }
+        self._color_pixel_counts = dict(self._statistics.color_counts)
+
+    def _log_current_color(self) -> None:
+        """Log a color-layer heading exactly once per painted color."""
+        if not self._plan or not self._plan.strokes:
+            return
+        color = self._current_stroke.color
+        if color == self._logged_color:
+            return
+        self._logged_color = color
+        layer = self._painted_colors.index(color) + 1
+        self.get_logger().info(
+            'Color %d/%d: RGB%s, logical pixels=%d, strokes=%d'
+            % (
+                layer,
+                len(self._painted_colors),
+                color.as_tuple(),
+                self._color_pixel_counts.get(color, 0),
+                self._color_stroke_totals[color],
+            )
+        )
+
+    def _canvas_background(self) -> Color:
+        """Select a detected or configured canvas background color."""
+        if self.config.exclude_background and self._pipeline_result is not None:
+            detected = self._pipeline_result.processed_image.background
+            if detected is not None:
+                return detected
+        return Color(
+            self.config.background_r,
+            self.config.background_g,
+            self.config.background_b,
+        )
+
+    def _log_final_statistics(self) -> None:
+        """Log one complete successful-run report."""
+        if self._pipeline_result is None or self._statistics is None:
+            return
+        result = self._pipeline_result
+        processed = result.processed_image
+        statistics = self._statistics
+        painted_colors = len(self._painted_colors)
+        painted_pixels = statistics.pixel_count - statistics.skipped_pixels
+        elapsed = 0.0
+        if self._started_at is not None:
+            elapsed = self._monotonic() - self._started_at
+        if processed.background is None:
+            background = 'none detected'
+        else:
+            background = 'RGB%s' % (processed.background.as_tuple(),)
+        lines = (
+            'Final painting statistics:',
+            '  Resolution: original=%dx%d, processed=%dx%d' % (
+                result.original_width,
+                result.original_height,
+                processed.width,
+                processed.height,
+            ),
+            '  Colors: palette=%d, painted=%d, changes=%d' % (
+                statistics.palette_size,
+                painted_colors,
+                max(painted_colors - 1, 0),
+            ),
+            '  Background: %s, skipped logical pixels=%d' % (
+                background,
+                statistics.skipped_pixels,
+            ),
+            '  Logical pixels: total=%d, painted=%d; strokes=%d' % (
+                statistics.pixel_count,
+                painted_pixels,
+                statistics.stroke_count,
+            ),
+            '  Distance: paint=%.3f, travel=%.3f, total=%.3f' % (
+                statistics.paint_distance,
+                statistics.travel_distance,
+                statistics.total_distance,
+            ),
+            '  Elapsed time: %.3f seconds' % elapsed,
+            '  Plan JSON: %s' % result.plan_path,
+            '  Preview PNG: %s' % result.preview_path,
+        )
+        self.get_logger().info('\n'.join(lines))
 
     def _start_service(self, operation: str, start: Callable[[], object]) -> bool:
         """Start and track a service request, normalizing sync failures."""
@@ -348,6 +473,7 @@ class PainterNode(Node):
                 self._fail('painting pipeline returned no plan')
                 return
             self._plan = result.plan_result.plan
+            self._prepare_progress(result)
             now = self._monotonic()
             self._service_deadline = now + self.config.service_timeout_sec
             self._pose_deadline = now + self.config.pose_timeout_sec
@@ -379,10 +505,11 @@ class PainterNode(Node):
         if self._phase == 'pen_off':
             if self._service_result('turning pen off') is _PENDING:
                 return
+            background = self._canvas_background()
             parameters = [
-                Parameter('background_r', value=self.config.background_r),
-                Parameter('background_g', value=self.config.background_g),
-                Parameter('background_b', value=self.config.background_b),
+                Parameter('background_r', value=background.red),
+                Parameter('background_g', value=background.green),
+                Parameter('background_b', value=background.blue),
             ]
             if self._start_service(
                 'setting background parameters',
@@ -533,11 +660,28 @@ class PainterNode(Node):
         """Record completion and select the next layer or terminal state."""
         previous_color = self._current_stroke.color
         self.completed_strokes += 1
+        self._completed_color_strokes += 1
+        layer = self._painted_colors.index(previous_color) + 1
+        total_strokes = len(self._plan.strokes)
+        self.get_logger().info(
+            'Stroke %d/%d complete (%.1f%%); color %d/%d RGB%s, stroke %d/%d'
+            % (
+                self.completed_strokes,
+                total_strokes,
+                100.0 * self.completed_strokes / total_strokes,
+                layer,
+                len(self._painted_colors),
+                previous_color.as_tuple(),
+                self._completed_color_strokes,
+                self._color_stroke_totals[previous_color],
+            )
+        )
         self._stroke_index += 1
         if self._stroke_index >= len(self._plan.strokes):
             self._transition(PainterState.PARKING)
             return
         if self._current_stroke.color != previous_color:
+            self._completed_color_strokes = 0
             self._transition(PainterState.COLOR_CHANGE)
         else:
             self._transition(PainterState.MOVING_TO_STROKE)
@@ -608,6 +752,7 @@ class PainterNode(Node):
         if self.finished:
             return
         if self.state == PainterState.IDLE:
+            self._started_at = self._monotonic()
             self.publish_stop()
             self._transition(PainterState.PREPARING)
         elif self.state == PainterState.PREPARING:
@@ -695,6 +840,7 @@ class PainterNode(Node):
         self._timer.cancel()
         self._shutdown_planner()
         self.get_logger().info(message)
+        self._log_final_statistics()
 
     def _finish_failure(self) -> None:
         """Publish a final stop and terminate while remaining in ERROR."""

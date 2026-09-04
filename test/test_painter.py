@@ -1,3 +1,23 @@
+# Copyright 2026 Pratik Mahankal
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 """Tests for the complete ROS 2 painter state machine."""
 
 from math import atan2
@@ -17,6 +37,7 @@ from turtlesim_image_painter import (
     Color,
     PaintingPlan,
     Point,
+    Statistics,
     Stroke,
 )
 from turtlesim_image_painter import painter
@@ -156,6 +177,22 @@ class _FakePublisher:
             self.events.append('stop')
 
 
+class _FakeLogger:
+    """Capture informational and error messages for reporting tests."""
+
+    def __init__(self):
+        self.infos = []
+        self.errors = []
+
+    def info(self, message):
+        """Record one informational message."""
+        self.infos.append(message)
+
+    def error(self, message):
+        """Record one error message."""
+        self.errors.append(message)
+
+
 @pytest.fixture
 def ros_context():
     """Provide an isolated rclpy context for node construction."""
@@ -168,18 +205,49 @@ def ros_context():
             context.shutdown()
 
 
-def pipeline_result(strokes):
+def pipeline_result(strokes, background=None):
     """Build the portion of PipelineResult consumed by PainterNode."""
-    plan = PaintingPlan(tuple(strokes), width=2, height=2)
-    return SimpleNamespace(plan_result=SimpleNamespace(plan=plan))
+    plan = PaintingPlan(
+        tuple(strokes), width=2, height=2, background=background)
+    colors = tuple(dict.fromkeys(stroke.color for stroke in strokes))
+    palette = colors
+    if background is not None and background not in palette:
+        palette += (background,)
+    skipped = 1 if background is not None else 0
+    statistics = Statistics(
+        pixel_count=4,
+        palette_size=len(palette),
+        stroke_count=len(strokes),
+        skipped_pixels=skipped,
+        color_counts=tuple((color, 1) for color in palette),
+        paint_distance=float(len(strokes)),
+        travel_distance=0.0,
+        total_distance=float(len(strokes)),
+    )
+    processed = SimpleNamespace(
+        width=2,
+        height=2,
+        palette=palette,
+        background=background,
+    )
+    return SimpleNamespace(
+        original_width=4,
+        original_height=3,
+        processed_image=processed,
+        plan_result=SimpleNamespace(plan=plan, statistics=statistics),
+        plan_path='/tmp/test_plan.json',
+        preview_path='/tmp/test_preview.png',
+    )
 
 
 def make_node(clock, events, context, strokes, **changes):
     """Create a painter wired to deterministic fake dependencies."""
+    pipeline_background = changes.pop('pipeline_background', None)
     options = {'image_path': '/tmp/test.png'}
     options.update(changes)
     overrides = [Parameter(name, value=value) for name, value in options.items()]
-    plan_future = _FakeFuture(result=pipeline_result(strokes))
+    plan_future = _FakeFuture(
+        result=pipeline_result(strokes, pipeline_background))
     executor = _FakeExecutor(plan_future)
     node = PainterNode(
         parameter_overrides=overrides,
@@ -399,6 +467,113 @@ def test_dry_run_executes_motion_without_enabling_pen(ros_context):
         assert 'draw' in events
         pen_events = [event for event in events if isinstance(event, tuple)]
         assert pen_events == [('pen_off', RED.as_tuple())]
+    finally:
+        node.destroy_node()
+
+
+def test_detected_background_is_applied_before_clear(ros_context):
+    """Excluded detected background replaces the configured canvas RGB."""
+    detected = Color(12, 34, 56)
+    events = []
+    node = make_node(
+        _FakeClock(),
+        events,
+        ros_context,
+        [],
+        pipeline_background=detected,
+    )
+    try:
+        prepare(node)
+        parameters = {
+            parameter.name: parameter.value
+            for parameter in node._parameter_client.parameters
+        }
+
+        assert parameters == {
+            'background_r': 12,
+            'background_g': 34,
+            'background_b': 56,
+        }
+        assert events.index('background') < events.index('clear')
+    finally:
+        node.destroy_node()
+
+
+def test_configured_background_is_used_when_exclusion_is_disabled(ros_context):
+    """Painting background pixels keeps the explicitly configured canvas."""
+    events = []
+    node = make_node(
+        _FakeClock(),
+        events,
+        ros_context,
+        [],
+        pipeline_background=Color(12, 34, 56),
+        exclude_background=False,
+        background_r=210,
+        background_g=220,
+        background_b=230,
+    )
+    try:
+        prepare(node)
+        parameters = {
+            parameter.name: parameter.value
+            for parameter in node._parameter_client.parameters
+        }
+
+        assert parameters == {
+            'background_r': 210,
+            'background_g': 220,
+            'background_b': 230,
+        }
+    finally:
+        node.destroy_node()
+
+
+def test_progress_and_final_statistics_cover_complete_run(ros_context):
+    """Successful painting logs every color, stroke, and final measurement."""
+    clock = _FakeClock()
+    strokes = [
+        Stroke(Point(2.0, 5.0), Point(3.0, 5.0), RED),
+        Stroke(Point(2.0, 6.0), Point(3.0, 6.0), BLUE),
+    ]
+    events = []
+    logger = _FakeLogger()
+    node = make_node(clock, events, ros_context, strokes)
+    node.get_logger = lambda: logger
+    try:
+        prepare(node, pose(5.5, 5.5))
+        execute_current_stroke(node)
+        clock.now = node.config.color_change_pause_sec
+        node._tick()
+        execute_current_stroke(node)
+        clock.now = 4.0
+        complete_parking(node)
+
+        color_logs = [
+            message for message in logger.infos
+            if message.startswith('Color ')
+        ]
+        stroke_logs = [
+            message for message in logger.infos
+            if message.startswith('Stroke ')
+        ]
+        final = next(
+            message for message in logger.infos
+            if message.startswith('Final painting statistics:')
+        )
+
+        assert len(color_logs) == 2
+        assert 'Color 1/2: RGB(255, 0, 0)' in color_logs[0]
+        assert 'Color 2/2: RGB(0, 0, 255)' in color_logs[1]
+        assert len(stroke_logs) == 2
+        assert 'Stroke 1/2 complete (50.0%)' in stroke_logs[0]
+        assert 'Stroke 2/2 complete (100.0%)' in stroke_logs[1]
+        assert 'original=4x3, processed=2x2' in final
+        assert 'palette=2, painted=2, changes=1' in final
+        assert 'Logical pixels: total=4, painted=4; strokes=2' in final
+        assert 'paint=2.000, travel=0.000, total=2.000' in final
+        assert 'Elapsed time: 4.000 seconds' in final
+        assert 'Preview PNG: /tmp/test_preview.png' in final
     finally:
         node.destroy_node()
 

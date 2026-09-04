@@ -1,3 +1,23 @@
+# Copyright 2026 Pratik Mahankal
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 """Tests for core image and painting data models."""
 
 import pytest
@@ -6,6 +26,7 @@ from turtlesim_image_painter import (
     CanvasBounds,
     Color,
     PaintingPlan,
+    PipelineResult,
     ProcessedImage,
     Statistics,
 )
@@ -86,6 +107,20 @@ def test_statistics_rejects_negative_color_counts():
     """Per-color statistics cannot contain a negative count."""
     with pytest.raises(ValueError):
         Statistics(color_counts=((RED, -1),))
+
+
+@pytest.mark.parametrize('width,height', [(0, 1), (1, 0), (-1, 1)])
+def test_pipeline_result_rejects_invalid_original_resolution(width, height):
+    """Pipeline metadata requires positive original image dimensions."""
+    with pytest.raises(ValueError, match='original image dimensions'):
+        PipelineResult(
+            original_width=width,
+            original_height=height,
+            processed_image=None,
+            plan_result=None,
+            plan_path='plan.json',
+            preview_path='preview.png',
+        )
 
 
 @pytest.mark.parametrize(
