@@ -13,3 +13,29 @@ turtlesim_image_painter:
     exclude_background: true
     color_order: largest_first
     path_order: raster
+
+painter:
+  ros__parameters:
+    start_x: 2.0
+    end_x: 9.0
+    line_y: 5.5
+    line_r: 255
+    line_g: 0
+    line_b: 0
+    pen_width: 3
+    background_r: 255
+    background_g: 255
+    background_b: 255
+    canvas_min_x: 1.0
+    canvas_max_x: 10.0
+    canvas_min_y: 1.0
+    canvas_max_y: 10.0
+    control_rate_hz: 20.0
+    linear_gain: 1.5
+    angular_gain: 6.0
+    max_linear_speed: 2.0
+    max_angular_speed: 4.0
+    position_tolerance: 0.05
+    angle_tolerance: 0.02
+    service_timeout_sec: 5.0
+    pose_timeout_sec: 2.0

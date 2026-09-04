@@ -19,7 +19,8 @@ setup(
     zip_safe=True,
     maintainer='Pratik Mahankal',
     maintainer_email='pratik.mahankal14@gmail.com',
-    description='Convert raster images into pixel-art painting plans for turtlesim.',
+    description=(
+        'Convert raster images into pixel-art painting plans for turtlesim.'),
     license='MIT',
     extras_require={
         'test': [
@@ -28,6 +29,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'painter = turtlesim_image_painter.painter:main',
             'process_image = process_image:main',
         ],
     },

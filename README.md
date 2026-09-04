@@ -58,3 +58,32 @@ strokes, while paint distance covers the strokes themselves.
 Inputs are EXIF-oriented, converted to RGB, composited over white when they
 contain transparency, resized without changing aspect ratio, and quantized
 using median cut. The default ROS parameters are in `config/default.yaml`.
+
+## Draw one line in Turtlesim
+
+Sprint 4 adds a one-shot `painter` node. It clears the canvas, teleports with
+the pen raised, aligns from pose feedback, and draws one configured horizontal
+line. All service calls and motion are asynchronous; completion is determined
+from `/turtle1/pose`, not elapsed sleeps.
+
+Build the workspace and source ROS 2 Jazzy plus the workspace installation.
+Then start Turtlesim in one terminal:
+
+```bash
+ros2 run turtlesim turtlesim_node
+```
+
+In a second terminal, run the painter with the installed defaults:
+
+```bash
+ros2 run turtlesim_image_painter painter --ros-args \
+  --params-file "$(ros2 pkg prefix turtlesim_image_painter)/share/turtlesim_image_painter/config/default.yaml"
+```
+
+The default run clears to white, draws a red line from `(2.0, 5.5)` to
+`(9.0, 5.5)`, stops the turtle, turns its pen off, logs successful completion,
+and exits. The start and end X coordinates, shared Y coordinate, line and
+background RGB values, pen width, controller gains and limits, tolerances, and
+service/pose timeouts can all be overridden with ROS parameters. Both
+left-to-right and right-to-left lines are supported; equal X endpoints and
+coordinates outside the configured canvas bounds are rejected.
