@@ -5,6 +5,7 @@ import json
 from PIL import Image
 
 from process_image import main
+import pytest
 
 
 def test_cli_processes_an_image(tmp_path, capsys):
@@ -34,6 +35,9 @@ def test_cli_writes_custom_plan_and_preview_paths(tmp_path, capsys):
 
     assert main([
         str(path),
+        '--colors', '2',
+        '--background-tolerance', '12',
+        '--stroke-orientation', 'vertical',
         '--path-order', 'snake',
         '--plan-output', str(plan_path),
         '--preview-output', str(preview_path),
@@ -42,6 +46,7 @@ def test_cli_writes_custom_plan_and_preview_paths(tmp_path, capsys):
     document = json.loads(plan_path.read_text(encoding='utf-8'))
     assert document['format_version'] == 1
     assert document['strategies']['path_order'] == 'snake'
+    assert document['strategies']['stroke_orientation'] == 'vertical'
     assert preview_path.is_file()
     output = capsys.readouterr().out
     assert str(plan_path) in output
@@ -54,3 +59,25 @@ def test_cli_reports_invalid_image(tmp_path, capsys):
 
     assert main([str(path)]) == 1
     assert 'Error: image does not exist' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('palette_size', ['1', '9'])
+def test_cli_rejects_palette_outside_two_to_eight(
+    tmp_path, palette_size,
+):
+    """Argument parsing exposes the same palette bounds as the API."""
+    path = tmp_path / 'sample.png'
+    Image.new('RGB', (1, 1), 'red').save(path)
+
+    with pytest.raises(SystemExit):
+        main([str(path), '--colors', palette_size])
+
+
+@pytest.mark.parametrize('tolerance', ['-1', '256'])
+def test_cli_rejects_invalid_background_tolerance(tmp_path, tolerance):
+    """CLI background cleanup uses the same bounded tolerance contract."""
+    path = tmp_path / 'sample.png'
+    Image.new('RGB', (1, 1), 'white').save(path)
+
+    with pytest.raises(SystemExit):
+        main([str(path), '--background-tolerance', tolerance])

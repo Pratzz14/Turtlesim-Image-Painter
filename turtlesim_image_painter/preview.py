@@ -61,6 +61,7 @@ class PreviewGenerator:
         output_path: Union[str, Path],
         color_order: str,
         path_order: str,
+        stroke_orientation: str = 'auto',
     ) -> Path:
         """Write a deterministic composite preview and return its path."""
         path = Path(output_path)
@@ -122,7 +123,8 @@ class PreviewGenerator:
                 original.width, original.height,
                 processed.width, processed.height,
             ),
-            'Strategies: color={}; path={}'.format(color_order, path_order),
+            'Strategies: color={}; path={}; orientation={}'.format(
+                color_order, path_order, stroke_orientation),
             'Strokes: {}; skipped pixels: {}'.format(
                 statistics.stroke_count, statistics.skipped_pixels),
             'Distance: paint={:.3f}; travel={:.3f}; total={:.3f}'.format(

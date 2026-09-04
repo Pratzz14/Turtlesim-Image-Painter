@@ -1,4 +1,4 @@
-"""Tests for mapping processed pixels into bounded horizontal strokes."""
+"""Tests for mapping processed pixels into bounded axis-aware strokes."""
 
 import pytest
 
@@ -35,7 +35,8 @@ def test_top_and_bottom_rows_map_to_inverted_cell_centers():
     """The first image row appears above the last image row."""
     image = make_image(((RED, RED), (BLUE, BLUE)))
 
-    strokes = StrokeGenerator().generate(image).plan.strokes
+    strokes = StrokeGenerator(
+        stroke_orientation='horizontal').generate(image).plan.strokes
 
     by_color = {stroke.color: stroke for stroke in strokes}
     assert by_color[RED].start == Point(1.0, 7.75)
@@ -54,7 +55,8 @@ def test_top_and_bottom_rows_map_to_inverted_cell_centers():
 def test_portrait_and_landscape_images_are_centered(rows, expected_edges):
     """Unused space is divided equally across opposing canvas sides."""
     image = make_image(rows)
-    strokes = StrokeGenerator().generate(image).plan.strokes
+    strokes = StrokeGenerator(
+        stroke_orientation='horizontal').generate(image).plan.strokes
 
     left = min(stroke.start.x for stroke in strokes)
     right = max(stroke.end.x for stroke in strokes)
@@ -109,7 +111,8 @@ def test_row_wise_runs_merge_only_consecutive_equal_pixels():
     """Runs split at color changes and never merge between rows."""
     image = make_image(((RED, RED, BLUE, RED), (RED, RED, BLUE, RED)))
 
-    strokes = StrokeGenerator().generate(image).plan.strokes
+    strokes = StrokeGenerator(
+        stroke_orientation='horizontal').generate(image).plan.strokes
 
     assert [stroke.color for stroke in strokes] == [
         RED, RED, RED, RED, BLUE, BLUE,
@@ -152,7 +155,9 @@ def test_raster_orders_each_color_top_to_bottom_left_to_right():
     ))
 
     red_strokes = [
-        stroke for stroke in StrokeGenerator().generate(image).plan.strokes
+        stroke
+        for stroke in StrokeGenerator(
+            stroke_orientation='horizontal').generate(image).plan.strokes
         if stroke.color == RED
     ]
 
@@ -170,8 +175,10 @@ def test_snake_reverses_order_and_endpoints_on_odd_source_rows():
 
     red_strokes = [
         stroke
-        for stroke in StrokeGenerator(path_order='snake').generate(
-            image).plan.strokes
+        for stroke in StrokeGenerator(
+            path_order='snake',
+            stroke_orientation='horizontal',
+        ).generate(image).plan.strokes
         if stroke.color == RED
     ]
 
@@ -185,11 +192,93 @@ def test_distances_follow_final_execution_order():
     """Paint and pen-up travel are measured after color ordering."""
     image = make_image(((RED, BLUE),))
 
-    statistics = StrokeGenerator().generate(image).statistics
+    statistics = StrokeGenerator(
+        stroke_orientation='horizontal').generate(image).statistics
 
     assert statistics.paint_distance == pytest.approx(9.0)
     assert statistics.travel_distance == pytest.approx(9.0)
     assert statistics.total_distance == pytest.approx(18.0)
+
+
+def test_auto_uses_vertical_strokes_for_tall_color_regions():
+    """A tall layer uses fewer column runs than horizontal row runs."""
+    image = make_image(((RED, RED),) * 4)
+
+    strokes = StrokeGenerator().generate(image).plan.strokes
+
+    assert len(strokes) == 2
+    assert all(stroke.start.x == stroke.end.x for stroke in strokes)
+    assert all(stroke.start.y > stroke.end.y for stroke in strokes)
+
+
+def test_vertical_runs_use_column_centers_and_complete_cell_edges():
+    """Forced vertical strokes preserve the centered canvas mapping."""
+    image = make_image(((RED, BLUE), (RED, BLUE)))
+
+    strokes = StrokeGenerator(
+        stroke_orientation='vertical').generate(image).plan.strokes
+    by_color = {stroke.color: stroke for stroke in strokes}
+
+    assert by_color[RED].start == Point(3.25, 10.0)
+    assert by_color[RED].end == Point(3.25, 1.0)
+    assert by_color[BLUE].start == Point(7.75, 10.0)
+    assert by_color[BLUE].end == Point(7.75, 1.0)
+
+
+def test_auto_uses_horizontal_strokes_for_wide_color_regions():
+    """A wide layer uses one horizontal run instead of many columns."""
+    image = make_image(((RED, RED, RED, RED),))
+
+    strokes = StrokeGenerator().generate(image).plan.strokes
+
+    assert len(strokes) == 1
+    assert strokes[0].start.y == strokes[0].end.y
+    assert strokes[0].start.x < strokes[0].end.x
+
+
+def test_auto_can_mix_orientations_between_color_layers():
+    """Each color independently selects its lower-stroke orientation."""
+    image = make_image((
+        (RED, WHITE, WHITE, WHITE),
+        (RED, WHITE, WHITE, WHITE),
+        (RED, WHITE, WHITE, WHITE),
+        (RED, BLUE, BLUE, BLUE),
+    ), background=WHITE)
+
+    strokes = StrokeGenerator().generate(image).plan.strokes
+
+    assert [stroke.color for stroke in strokes] == [RED, BLUE]
+    assert strokes[0].start.x == strokes[0].end.x
+    assert strokes[1].start.y == strokes[1].end.y
+
+
+def test_auto_ties_minimize_travel_before_preferring_horizontal():
+    """Tied layer counts use the shortest complete pen-up route."""
+    image = make_image(((RED, BLUE),))
+    automatic = StrokeGenerator().generate(image)
+    horizontal = StrokeGenerator(
+        stroke_orientation='horizontal').generate(image)
+
+    assert automatic.statistics.stroke_count == 2
+    assert automatic.statistics.travel_distance < (
+        horizontal.statistics.travel_distance)
+
+    single = StrokeGenerator().generate(make_image(((RED,),))).plan.strokes
+    assert single[0].start.y == single[0].end.y
+
+
+def test_vertical_snake_reverses_odd_columns():
+    """Vertical snake traversal alternates direction by source column."""
+    image = make_image(((RED, RED), (RED, RED)))
+
+    strokes = StrokeGenerator(
+        path_order='snake',
+        stroke_orientation='vertical',
+    ).generate(image).plan.strokes
+
+    assert strokes[0].start.y > strokes[0].end.y
+    assert strokes[1].start.y < strokes[1].end.y
+    assert strokes[0].start.x < strokes[1].start.x
 
 
 def test_single_stroke_has_no_initial_travel():
@@ -207,6 +296,7 @@ def test_single_stroke_has_no_initial_travel():
     [
         ({'color_order': 'random'}, 'largest_first'),
         ({'path_order': 'diagonal'}, 'raster, snake'),
+        ({'stroke_orientation': 'diagonal'}, 'auto, horizontal, vertical'),
     ],
 )
 def test_generator_rejects_unsupported_strategies(options, message):

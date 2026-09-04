@@ -21,6 +21,7 @@ def _plan_document(
     result: PlanResult,
     color_order: str,
     path_order: str,
+    stroke_orientation: str,
 ) -> dict:
     """Build the stable JSON representation of a painting plan."""
     plan = result.plan
@@ -35,6 +36,7 @@ def _plan_document(
         'strategies': {
             'color_order': color_order,
             'path_order': path_order,
+            'stroke_orientation': stroke_orientation,
         },
         'statistics': {
             'pixel_count': statistics.pixel_count,
@@ -97,15 +99,17 @@ class PaintingPipeline:
     def run(
         self,
         image_path: Union[str, Path],
-        max_width: int = 64,
-        max_height: int = 64,
-        palette_size: int = 8,
+        max_width: int = 80,
+        max_height: int = 80,
+        palette_size: int = 4,
         background_threshold: float = 0.5,
         allow_upscale: bool = False,
         color_order: str = 'largest_first',
         path_order: str = 'raster',
         plan_output: Optional[Union[str, Path]] = None,
         preview_output: Optional[Union[str, Path]] = None,
+        stroke_orientation: str = 'auto',
+        background_tolerance: int = 24,
     ) -> PipelineResult:
         """Process an image, order its strokes, and write JSON and PNG."""
         source_path = Path(image_path)
@@ -133,7 +137,14 @@ class PaintingPipeline:
             max_height,
             allow_upscale=allow_upscale,
         )
-        quantized = self.processor.quantize_image(resized, palette_size)
+        background = self.processor.detect_dominant_background(
+            resized, background_threshold)
+        quantized = self.processor.quantize_image(
+            resized,
+            palette_size,
+            background=background,
+            background_tolerance=background_tolerance,
+        )
         processed = self.processor.to_processed_image(
             quantized, background_threshold)
         generator = StrokeGenerator(
@@ -141,6 +152,7 @@ class PaintingPipeline:
             exclude_background=self.exclude_background,
             color_order=color_order,
             path_order=path_order,
+            stroke_orientation=stroke_orientation,
         )
         result = generator.generate(processed)
 
@@ -152,7 +164,12 @@ class PaintingPipeline:
             try:
                 temporary_plan.write_text(
                     json.dumps(
-                        _plan_document(result, color_order, path_order),
+                        _plan_document(
+                            result,
+                            color_order,
+                            path_order,
+                            stroke_orientation,
+                        ),
                         indent=2,
                     ) + '\n',
                     encoding='utf-8',
@@ -166,6 +183,7 @@ class PaintingPipeline:
                     temporary_preview,
                     color_order,
                     path_order,
+                    stroke_orientation,
                 )
                 os.replace(temporary_plan, plan_path)
                 os.replace(temporary_preview, preview_path)

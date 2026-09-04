@@ -14,15 +14,29 @@ def build_parser() -> argparse.ArgumentParser:
         description='Convert a PNG or JPEG into a quantized pixel matrix.',
     )
     parser.add_argument('image', type=Path, help='path to a PNG or JPEG image')
-    parser.add_argument('--width', type=int, default=64, help='maximum width')
-    parser.add_argument('--height', type=int, default=64, help='maximum height')
+    parser.add_argument('--width', type=int, default=80, help='maximum width')
+    parser.add_argument('--height', type=int, default=80, help='maximum height')
     parser.add_argument(
         '--colors',
         type=int,
-        choices=range(4, 9),
-        default=8,
-        metavar='4-8',
-        help='palette size (default: 8)',
+        choices=range(2, 9),
+        default=4,
+        metavar='2-8',
+        help='palette size (default: 4)',
+    )
+    parser.add_argument(
+        '--background-tolerance',
+        type=int,
+        choices=range(0, 256),
+        default=24,
+        metavar='0-255',
+        help='near-background color tolerance (default: 24)',
+    )
+    parser.add_argument(
+        '--stroke-orientation',
+        choices=('auto', 'horizontal', 'vertical'),
+        default='auto',
+        help='stroke orientation strategy (default: auto)',
     )
     parser.add_argument(
         '--color-order',
@@ -59,6 +73,8 @@ def main(arguments: Optional[Sequence[str]] = None) -> int:
             max_width=options.width,
             max_height=options.height,
             palette_size=options.colors,
+            background_tolerance=options.background_tolerance,
+            stroke_orientation=options.stroke_orientation,
             color_order=options.color_order,
             path_order=options.path_order,
             plan_output=options.plan_output,

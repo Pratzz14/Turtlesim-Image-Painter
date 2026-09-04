@@ -1,28 +1,20 @@
-turtlesim_image_painter:
+painter:
   ros__parameters:
-    max_width: 64
-    max_height: 64
-    palette_size: 8
+    image_path: ''
+    plan_output: ''
+    preview_output: ''
+    max_width: 80
+    max_height: 80
+    palette_size: 4
     transparency_color: [255, 255, 255]
     background_threshold: 0.5
+    background_tolerance: 24
     allow_upscale: false
-    canvas_min_x: 1.0
-    canvas_max_x: 10.0
-    canvas_min_y: 1.0
-    canvas_max_y: 10.0
     exclude_background: true
     color_order: largest_first
     path_order: raster
-
-painter:
-  ros__parameters:
-    start_x: 2.0
-    end_x: 9.0
-    line_y: 5.5
-    line_r: 255
-    line_g: 0
-    line_b: 0
-    pen_width: 3
+    stroke_orientation: auto
+    pen_width: 6
     background_r: 255
     background_g: 255
     background_b: 255
@@ -30,12 +22,17 @@ painter:
     canvas_max_x: 10.0
     canvas_min_y: 1.0
     canvas_max_y: 10.0
+    parking_x: 0.5
+    parking_y: 0.5
     control_rate_hz: 20.0
-    linear_gain: 1.5
-    angular_gain: 6.0
-    max_linear_speed: 2.0
-    max_angular_speed: 4.0
+    linear_gain: 3.0
+    angular_gain: 12.0
+    max_linear_speed: 4.0
+    max_angular_speed: 8.0
     position_tolerance: 0.05
     angle_tolerance: 0.02
     service_timeout_sec: 5.0
     pose_timeout_sec: 2.0
+    movement_timeout_sec: 30.0
+    color_change_pause_sec: 1.0
+    dry_run: false

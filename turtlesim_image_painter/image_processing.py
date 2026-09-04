@@ -87,21 +87,66 @@ class ImageProcessor:
         )
         if size == image.size:
             return image.copy()
-        return image.resize(size, Image.Resampling.LANCZOS)
+        return image.resize(size, Image.Resampling.HAMMING)
 
     @staticmethod
-    def quantize_image(image: Image.Image, palette_size: int) -> Image.Image:
-        """Reduce an RGB image using Pillow's median-cut quantizer."""
+    def quantize_image(
+        image: Image.Image,
+        palette_size: int,
+        background: Optional[Color] = None,
+        background_tolerance: int = 24,
+    ) -> Image.Image:
+        """Reduce an RGB image while reserving a detected background color."""
         if not isinstance(palette_size, int) or isinstance(palette_size, bool):
             raise TypeError('palette size must be an integer')
-        if not 4 <= palette_size <= 8:
-            raise ValueError('palette size must be between 4 and 8')
+        if not 2 <= palette_size <= 8:
+            raise ValueError('palette size must be between 2 and 8')
+        if background is not None and not isinstance(background, Color):
+            raise TypeError('background must be a Color or None')
+        if (
+            not isinstance(background_tolerance, int)
+            or isinstance(background_tolerance, bool)
+            or not 0 <= background_tolerance <= 255
+        ):
+            raise ValueError(
+                'background tolerance must be an integer from 0 to 255')
         rgb_image = image.convert('RGB')
-        return rgb_image.quantize(
-            colors=palette_size,
+        if background is None:
+            return rgb_image.quantize(
+                colors=palette_size,
+                method=Image.Quantize.MEDIANCUT,
+                dither=Image.Dither.NONE,
+            ).convert('RGB')
+
+        background_value = background.as_tuple()
+        mask = []
+        foreground_pixels = []
+        for pixel in rgb_image.getdata():
+            is_background = max(
+                abs(channel - reference)
+                for channel, reference in zip(pixel, background_value)
+            ) <= background_tolerance
+            mask.append(is_background)
+            if not is_background:
+                foreground_pixels.append(pixel)
+
+        if not foreground_pixels:
+            return Image.new('RGB', rgb_image.size, background_value)
+
+        foreground = Image.new('RGB', (len(foreground_pixels), 1))
+        foreground.putdata(foreground_pixels)
+        reduced = foreground.quantize(
+            colors=palette_size - 1,
             method=Image.Quantize.MEDIANCUT,
             dither=Image.Dither.NONE,
         ).convert('RGB')
+        reduced_pixels = iter(reduced.getdata())
+        output = Image.new('RGB', rgb_image.size)
+        output.putdata([
+            background_value if is_background else next(reduced_pixels)
+            for is_background in mask
+        ])
+        return output
 
     @staticmethod
     def detect_dominant_background(
@@ -122,17 +167,25 @@ class ImageProcessor:
     def process(
         self,
         path: Union[str, Path],
-        max_width: int = 64,
-        max_height: int = 64,
-        palette_size: int = 8,
+        max_width: int = 80,
+        max_height: int = 80,
+        palette_size: int = 4,
         background_threshold: float = 0.5,
         allow_upscale: bool = False,
+        background_tolerance: int = 24,
     ) -> ProcessedImage:
         """Run the complete file-to-pixel-matrix processing pipeline."""
         loaded = self.load_image(path)
         resized = self.resize_image(
             loaded, max_width, max_height, allow_upscale=allow_upscale)
-        quantized = self.quantize_image(resized, palette_size)
+        background = self.detect_dominant_background(
+            resized, background_threshold)
+        quantized = self.quantize_image(
+            resized,
+            palette_size,
+            background=background,
+            background_tolerance=background_tolerance,
+        )
         return self.to_processed_image(quantized, background_threshold)
 
     def to_processed_image(

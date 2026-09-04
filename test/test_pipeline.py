@@ -41,6 +41,7 @@ def test_pipeline_writes_ordered_json_and_representative_preview(tmp_path):
     assert document['strategies'] == {
         'color_order': 'largest_first',
         'path_order': 'snake',
+        'stroke_orientation': 'auto',
     }
     assert document['statistics']['stroke_count'] == len(
         document['strokes'])

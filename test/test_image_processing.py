@@ -100,7 +100,7 @@ def test_resize_does_not_upscale_by_default(processor):
     assert processor.resize_image(image, 100, 100).size == (10, 5)
 
 
-@pytest.mark.parametrize('palette_size', [4, 8])
+@pytest.mark.parametrize('palette_size', [2, 8])
 def test_quantization_limits_palette(processor, palette_size):
     """Median-cut output never exceeds the requested palette size."""
     image = Image.new('RGB', (16, 16))
@@ -114,11 +114,77 @@ def test_quantization_limits_palette(processor, palette_size):
     assert len(set(quantized.getdata())) <= palette_size
 
 
-@pytest.mark.parametrize('palette_size', [3, 9])
+def test_background_aware_quantization_reserves_and_cleans_background(
+    processor,
+):
+    """Near-background noise does not consume foreground palette entries."""
+    image = Image.new('RGB', (12, 1), (255, 255, 255))
+    image.putdata([
+        (255, 255, 255),
+        (254, 254, 254),
+        (249, 251, 252),
+        (255, 255, 255),
+        (32, 24, 21),
+        (28, 20, 18),
+        (2, 96, 147),
+        (0, 91, 144),
+        (255, 255, 255),
+        (252, 252, 252),
+        (32, 24, 21),
+        (2, 96, 147),
+    ])
+
+    quantized = processor.quantize_image(
+        image,
+        4,
+        background=Color(255, 255, 255),
+        background_tolerance=24,
+    )
+    palette = set(quantized.getdata())
+
+    assert (255, 255, 255) in palette
+    assert len(palette) <= 4
+    assert all(
+        color == (255, 255, 255)
+        or max(255 - channel for channel in color) > 24
+        for color in palette
+    )
+    assert quantized.getpixel((1, 0)) == (255, 255, 255)
+    assert quantized.getpixel((2, 0)) == (255, 255, 255)
+
+
+def test_background_aware_quantization_handles_background_only(processor):
+    """An all-background image remains a single exact color."""
+    image = Image.new('RGB', (3, 2), (252, 253, 254))
+
+    quantized = processor.quantize_image(
+        image,
+        2,
+        background=Color(255, 255, 255),
+        background_tolerance=24,
+    )
+
+    assert set(quantized.getdata()) == {(255, 255, 255)}
+
+
+@pytest.mark.parametrize('tolerance', [-1, 256, 1.5, True])
+def test_quantization_rejects_invalid_background_tolerance(
+    processor, tolerance,
+):
+    """Background cleanup tolerance is a bounded integer."""
+    with pytest.raises(ValueError):
+        processor.quantize_image(
+            Image.new('RGB', (1, 1)),
+            4,
+            background_tolerance=tolerance,
+        )
+
+
+@pytest.mark.parametrize('palette_size', [1, 9])
 def test_quantization_rejects_palette_outside_supported_range(
     processor, palette_size,
 ):
-    """The public quantizer enforces the supported 4-to-8-color range."""
+    """The public quantizer enforces the supported 2-to-8-color range."""
     with pytest.raises(ValueError):
         processor.quantize_image(Image.new('RGB', (1, 1)), palette_size)
 

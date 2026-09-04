@@ -1,9 +1,11 @@
-"""One-shot ROS 2 node for drawing a horizontal turtlesim line."""
+"""Timer-driven ROS 2 node for painting a complete image plan."""
 
+from concurrent.futures import Future
+from enum import auto, Enum
 import signal
 import sys
+from threading import Thread
 import time
-from enum import Enum, auto
 from typing import Callable, Optional, Sequence
 
 from geometry_msgs.msg import Twist
@@ -20,35 +22,72 @@ from std_srvs.srv import Empty
 from turtlesim.msg import Pose
 from turtlesim.srv import SetPen, TeleportAbsolute
 
-from .models import Point
+from .image_processing import ImageProcessor
+from .models import Color, PaintingPlan, Point
+from .pipeline import PaintingPipeline
 from .turtle_control import (
-    PainterConfig,
     alignment_command,
     angle_arrived,
     drive_command,
     heading_between,
+    PainterConfig,
     position_arrived,
 )
 
 
 class PainterState(Enum):
-    """Execution states for one horizontal line."""
+    """Public execution states for a complete painting plan."""
 
-    WAITING = auto()
-    BACKGROUND = auto()
-    CLEAR = auto()
-    PEN_OFF_INITIAL = auto()
-    TELEPORT = auto()
-    WAIT_TELEPORT_POSE = auto()
-    ALIGN = auto()
+    IDLE = auto()
+    PREPARING = auto()
+    MOVING_TO_STROKE = auto()
+    ALIGNING = auto()
     PEN_DOWN = auto()
-    DRAW = auto()
-    PEN_OFF_FINAL = auto()
-    CLEANUP = auto()
-    DONE = auto()
+    DRAWING = auto()
+    PEN_UP = auto()
+    COLOR_CHANGE = auto()
+    PARKING = auto()
+    FINISHED = auto()
+    ERROR = auto()
 
 
 _PENDING = object()
+
+
+class _DaemonPlanningWorker:
+    """Run the single pipeline task without delaying interpreter shutdown."""
+
+    def __init__(self) -> None:
+        self._future = None
+
+    def submit(self, function, *args, **kwargs):
+        """Start one daemon task and expose its result as a Future."""
+        if self._future is not None:
+            raise RuntimeError('planning worker accepts only one task')
+        future = Future()
+        self._future = future
+
+        def run() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                result = function(*args, **kwargs)
+            except BaseException as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+        Thread(
+            target=run,
+            name='painting-plan',
+            daemon=True,
+        ).start()
+        return future
+
+    def shutdown(self, wait=False, cancel_futures=False) -> None:
+        """Cancel work that has not started; daemon work never blocks exit."""
+        if cancel_futures and self._future is not None:
+            self._future.cancel()
 
 
 def _install_shutdown_signal_handlers(callback):
@@ -77,16 +116,18 @@ def _restore_signal_handlers(previous) -> None:
 
 
 class PainterNode(Node):
-    """Draw one configured line using pose feedback and async services."""
+    """Generate and execute one complete painting plan asynchronously."""
 
     def __init__(
         self,
         *,
         parameter_overrides=None,
         monotonic: Callable[[], float] = time.monotonic,
+        pipeline=None,
+        executor=None,
         context=None,
     ) -> None:
-        """Declare configuration and create the ROS interfaces."""
+        """Declare configuration and create ROS and planning interfaces."""
         super().__init__(
             'painter',
             parameter_overrides=parameter_overrides,
@@ -95,6 +136,8 @@ class PainterNode(Node):
         self._monotonic = monotonic
         try:
             self.config = self._declare_config()
+            if not self.config.image_path.strip():
+                raise ValueError('image_path must not be empty')
         except Exception:
             self.destroy_node()
             raise
@@ -109,8 +152,16 @@ class PainterNode(Node):
         self._clear_client = self.create_client(Empty, '/clear')
         self._parameter_client = AsyncParameterClient(self, '/turtlesim')
 
+        self._pipeline = pipeline or PaintingPipeline(
+            processor=ImageProcessor(self.config.transparency_color),
+            bounds=self.config.bounds,
+            exclude_background=self.config.exclude_background,
+        )
+        self._owns_executor = executor is None
+        self._executor = executor or _DaemonPlanningWorker()
+
         now = self._monotonic()
-        self.state = PainterState.WAITING
+        self.state = PainterState.IDLE
         self.finished = False
         self.exit_code = 1
         self.failure_reason: Optional[str] = None
@@ -118,39 +169,39 @@ class PainterNode(Node):
         self._pose_time: Optional[float] = None
         self._pose_generation = 0
         self._teleport_pose_generation = 0
-        self._service_deadline = now + self.config.service_timeout_sec
-        self._pose_deadline = now + self.config.pose_timeout_sec
-        self._state_deadline = now
+        self._parking_pose_generation = 0
+        self._plan: Optional[PaintingPlan] = None
+        self._planning_future = None
         self._future = None
-        self._entered = False
+        self._phase = ''
+        self._stroke_index = 0
+        self.completed_strokes = 0
+        self._service_deadline = now
+        self._pose_deadline = now
+        self._state_deadline = now
+        self._error_cleanup_started = False
+        self._planner_closed = False
         self._timer = self.create_timer(
             1.0 / self.config.control_rate_hz, self._tick)
-        self.get_logger().info('Waiting for turtlesim services and pose')
+        self.get_logger().info('Painter ready to prepare image plan')
 
     def _declare_config(self) -> PainterConfig:
         """Declare all node parameters and return their validated snapshot."""
         values = {}
         for name, default in PainterConfig.defaults().items():
+            if name == 'transparency_color':
+                default = list(default)
             values[name] = self.declare_parameter(name, default).value
         return PainterConfig.from_mapping(values)
 
     def _pose_callback(self, pose: Pose) -> None:
-        """Record the freshest turtle pose."""
+        """Record the freshest turtle pose without advancing execution."""
         self._pose = pose
         self._pose_time = self._monotonic()
         self._pose_generation += 1
 
-    def _services_ready(self) -> bool:
-        """Return whether every required service endpoint is available."""
-        return (
-            self._pen_client.service_is_ready()
-            and self._teleport_client.service_is_ready()
-            and self._clear_client.service_is_ready()
-            and self._parameter_client.services_are_ready()
-        )
-
     def _pose_is_fresh(self) -> bool:
-        """Return whether a recently received pose is available."""
+        """Return whether a recent pose sample is available."""
         return (
             self._pose is not None
             and self._pose_time is not None
@@ -158,24 +209,52 @@ class PainterNode(Node):
             <= self.config.pose_timeout_sec
         )
 
+    def _services_ready(self) -> bool:
+        """Return whether services required by the current plan are ready."""
+        ready = (
+            self._pen_client.service_is_ready()
+            and self._teleport_client.service_is_ready()
+            and self._clear_client.service_is_ready()
+            and self._parameter_client.services_are_ready()
+        )
+        return ready
+
+    @property
+    def _current_stroke(self):
+        """Return the stroke currently being executed."""
+        return self._plan.strokes[self._stroke_index]
+
     def _transition(self, state: PainterState) -> None:
-        """Enter a new state and reset its asynchronous bookkeeping."""
+        """Enter a state and reset state-local asynchronous bookkeeping."""
         self.state = state
-        self._entered = False
+        self._phase = ''
         self._future = None
-        self._state_deadline = (
-            self._monotonic() + self.config.service_timeout_sec)
+        now = self._monotonic()
+        if state in (PainterState.ALIGNING, PainterState.DRAWING):
+            self._state_deadline = now + self.config.movement_timeout_sec
+        elif state == PainterState.COLOR_CHANGE:
+            self._state_deadline = now + self.config.color_change_pause_sec
+        else:
+            self._state_deadline = now + self.config.service_timeout_sec
         self.get_logger().info('Painter state: %s' % state.name.lower())
 
-    def _start_future(self, future) -> None:
-        """Track one asynchronous service operation."""
+    def _start_service(self, operation: str, start: Callable[[], object]) -> bool:
+        """Start and track a service request, normalizing sync failures."""
+        try:
+            future = start()
+        except Exception as error:
+            self._fail(f'{operation} failed: {error}')
+            return False
+        if future is None:
+            self._fail(f'{operation} did not create a service request')
+            return False
         self._future = future
-        self._entered = True
         self._state_deadline = (
             self._monotonic() + self.config.service_timeout_sec)
+        return True
 
-    def _future_result(self, operation: str):
-        """Return a completed result, a pending sentinel, or start cleanup."""
+    def _service_result(self, operation: str):
+        """Return a response, a pending sentinel, or enter safe error state."""
         if self._future is None:
             self._fail(f'{operation} did not create a service request')
             return _PENDING
@@ -194,12 +273,13 @@ class PainterNode(Node):
             return _PENDING
         return result
 
-    def _pen_request(self, off: bool):
-        """Build a pen request using the configured line appearance."""
+    def _pen_request(self, off: bool, color: Optional[Color] = None):
+        """Build a pen request for a stroke or a safe pen-off fallback."""
+        selected = color or Color(0, 0, 0)
         request = SetPen.Request()
-        request.r = self.config.line_r
-        request.g = self.config.line_g
-        request.b = self.config.line_b
+        request.r = selected.red
+        request.g = selected.green
+        request.b = selected.blue
         request.width = self.config.pen_width
         request.off = int(off)
         return request
@@ -226,92 +306,173 @@ class PainterNode(Node):
         self._fail(f'pose feedback unavailable while {operation}')
         return False
 
-    def _tick_waiting(self) -> None:
-        """Wait concurrently for service discovery and initial pose."""
-        now = self._monotonic()
-        services_ready = self._services_ready()
-        pose_ready = self._pose_is_fresh()
-        if not services_ready and now >= self._service_deadline:
-            self._fail(
-                'required turtlesim services were not available in time')
-            return
-        if not pose_ready and now >= self._pose_deadline:
-            self._fail('initial turtle pose was not available in time')
-            return
-        if services_ready and pose_ready:
-            self._transition(PainterState.BACKGROUND)
+    def _submit_pipeline(self) -> bool:
+        """Submit image processing without touching ROS from the worker."""
+        try:
+            self._planning_future = self._executor.submit(
+                self._pipeline.run,
+                self.config.image_path,
+                max_width=self.config.max_width,
+                max_height=self.config.max_height,
+                palette_size=self.config.palette_size,
+                background_threshold=self.config.background_threshold,
+                background_tolerance=self.config.background_tolerance,
+                allow_upscale=self.config.allow_upscale,
+                stroke_orientation=self.config.stroke_orientation,
+                color_order=self.config.color_order,
+                path_order=self.config.path_order,
+                plan_output=self.config.plan_output or None,
+                preview_output=self.config.preview_output or None,
+            )
+        except Exception as error:
+            self._fail(f'starting painting pipeline failed: {error}')
+            return False
+        return True
 
-    def _tick_background(self) -> None:
-        """Set the Turtlesim background parameters."""
-        if not self._entered:
+    def _tick_preparing(self) -> None:
+        """Poll planning, readiness, and the asynchronous setup sequence."""
+        if self._phase == '':
+            if self._submit_pipeline():
+                self._phase = 'planning'
+            return
+
+        if self._phase == 'planning':
+            if not self._planning_future.done():
+                return
+            try:
+                result = self._planning_future.result()
+            except Exception as error:
+                self._fail(f'painting pipeline failed: {error}')
+                return
+            if result is None or getattr(result, 'plan_result', None) is None:
+                self._fail('painting pipeline returned no plan')
+                return
+            self._plan = result.plan_result.plan
+            now = self._monotonic()
+            self._service_deadline = now + self.config.service_timeout_sec
+            self._pose_deadline = now + self.config.pose_timeout_sec
+            self._phase = 'waiting'
+            self.get_logger().info(
+                'Prepared %d strokes' % len(self._plan.strokes))
+            return
+
+        if self._phase == 'waiting':
+            now = self._monotonic()
+            if not self._services_ready():
+                if now >= self._service_deadline:
+                    self._fail(
+                        'required turtlesim services were not available in time')
+                return
+            if self._plan.strokes and not self._pose_is_fresh():
+                if now >= self._pose_deadline:
+                    self._fail('initial turtle pose was not available in time')
+                return
+            color = self._plan.strokes[0].color if self._plan.strokes else None
+            if self._start_service(
+                'turning pen off',
+                lambda: self._pen_client.call_async(
+                    self._pen_request(True, color)),
+            ):
+                self._phase = 'pen_off'
+            return
+
+        if self._phase == 'pen_off':
+            if self._service_result('turning pen off') is _PENDING:
+                return
             parameters = [
                 Parameter('background_r', value=self.config.background_r),
                 Parameter('background_g', value=self.config.background_g),
                 Parameter('background_b', value=self.config.background_b),
             ]
-            self._start_future(
-                self._parameter_client.set_parameters(parameters))
+            if self._start_service(
+                'setting background parameters',
+                lambda: self._parameter_client.set_parameters(parameters),
+            ):
+                self._phase = 'background'
             return
-        result = self._future_result('setting background parameters')
-        if result is _PENDING:
-            return
-        results = getattr(result, 'results', ())
-        if len(results) != 3 or not all(item.successful for item in results):
-            reasons = [item.reason for item in results if not item.successful]
-            detail = '; '.join(filter(None, reasons)) or 'parameter rejected'
-            self._fail(f'setting background parameters failed: {detail}')
-            return
-        self._transition(PainterState.CLEAR)
 
-    def _tick_simple_service(
-        self,
-        operation: str,
-        start: Callable[[], object],
-        next_state: PainterState,
-    ) -> None:
-        """Run an empty-response async service state."""
-        if not self._entered:
-            self._start_future(start())
+        if self._phase == 'background':
+            result = self._service_result('setting background parameters')
+            if result is _PENDING:
+                return
+            results = getattr(result, 'results', ())
+            if len(results) != 3 or not all(item.successful for item in results):
+                reasons = [
+                    item.reason for item in results if not item.successful
+                ]
+                detail = '; '.join(filter(None, reasons))
+                self._fail(
+                    'setting background parameters failed: '
+                    + (detail or 'parameter rejected'))
+                return
+            if self._start_service(
+                'clearing canvas',
+                lambda: self._clear_client.call_async(Empty.Request()),
+            ):
+                self._phase = 'clear'
             return
-        if self._future_result(operation) is not _PENDING:
-            self._transition(next_state)
 
-    def _tick_teleport(self) -> None:
-        """Teleport to the start while preserving the current heading."""
-        if not self._entered:
+        if self._phase == 'clear':
+            if self._service_result('clearing canvas') is _PENDING:
+                return
+        if not self._plan.strokes:
+            self._transition(PainterState.PARKING)
+            return
+        self._transition(PainterState.MOVING_TO_STROKE)
+
+    def _tick_moving_to_stroke(self) -> None:
+        """Teleport with the pen raised and confirm the target pose."""
+        target = self._current_stroke.start
+        if self._phase == '':
+            if not self._require_fresh_pose('moving to stroke'):
+                return
+            current = Point(self._pose.x, self._pose.y)
+            if position_arrived(
+                current, target, self.config.position_tolerance,
+            ):
+                self._transition(PainterState.ALIGNING)
+                return
             request = TeleportAbsolute.Request()
-            request.x = self.config.start_x
-            request.y = self.config.line_y
+            request.x = target.x
+            request.y = target.y
             request.theta = self._pose.theta
-            self._start_future(self._teleport_client.call_async(request))
-            return
-        if self._future_result('teleporting turtle') is not _PENDING:
             self._teleport_pose_generation = self._pose_generation
-            self._transition(PainterState.WAIT_TELEPORT_POSE)
+            if self._start_service(
+                'teleporting turtle',
+                lambda: self._teleport_client.call_async(request),
+            ):
+                self._phase = 'teleport'
+            return
+
+        if self._phase == 'teleport':
+            if self._service_result('teleporting turtle') is _PENDING:
+                return
+            self._phase = 'pose'
             self._state_deadline = (
                 self._monotonic() + self.config.pose_timeout_sec)
 
-    def _tick_wait_teleport_pose(self) -> None:
-        """Confirm teleport completion with a newer pose sample."""
         if (
             self._pose_generation > self._teleport_pose_generation
             and self._pose_is_fresh()
             and position_arrived(
                 Point(self._pose.x, self._pose.y),
-                self.config.start,
+                target,
                 self.config.position_tolerance,
             )
         ):
-            self._transition(PainterState.ALIGN)
-            return
-        if self._monotonic() >= self._state_deadline:
+            self._transition(PainterState.ALIGNING)
+        elif self._monotonic() >= self._state_deadline:
             self._fail('post-teleport pose was not available in time')
 
-    def _tick_align(self) -> None:
-        """Rotate to the line heading using pose feedback."""
+    def _tick_aligning(self) -> None:
+        """Rotate toward the current stroke using pose feedback."""
+        if self._monotonic() >= self._state_deadline:
+            self._fail('alignment movement timed out')
+            return
         if not self._require_fresh_pose('aligning'):
             return
-        target = heading_between(self.config.start, self.config.end)
+        target = heading_between(
+            self._current_stroke.start, self._current_stroke.end)
         if angle_arrived(
             self._pose.theta, target, self.config.angle_tolerance,
         ):
@@ -326,21 +487,41 @@ class PainterNode(Node):
         )
         self._publish_velocity(command.linear, command.angular)
 
-    def _tick_draw(self) -> None:
-        """Drive to the line endpoint using fresh pose feedback."""
+    def _tick_pen_down(self) -> None:
+        """Enable the current color, unless this is a dry run."""
+        if self.config.dry_run:
+            self._transition(PainterState.DRAWING)
+            return
+        if self._phase == '':
+            if self._start_service(
+                'turning pen on',
+                lambda: self._pen_client.call_async(
+                    self._pen_request(False, self._current_stroke.color)),
+            ):
+                self._phase = 'service'
+            return
+        if self._service_result('turning pen on') is not _PENDING:
+            self._transition(PainterState.DRAWING)
+
+    def _tick_drawing(self) -> None:
+        """Drive visibly to the current stroke endpoint."""
+        if self._monotonic() >= self._state_deadline:
+            self._fail('drawing movement timed out')
+            return
         if not self._require_fresh_pose('drawing'):
             return
         current = Point(self._pose.x, self._pose.y)
+        target = self._current_stroke.end
         if position_arrived(
-            current, self.config.end, self.config.position_tolerance,
+            current, target, self.config.position_tolerance,
         ):
             self.publish_stop()
-            self._transition(PainterState.PEN_OFF_FINAL)
+            self._transition(PainterState.PEN_UP)
             return
         command = drive_command(
             current,
             self._pose.theta,
-            self.config.end,
+            target,
             self.config.linear_gain,
             self.config.angular_gain,
             self.config.max_linear_speed,
@@ -348,87 +529,199 @@ class PainterNode(Node):
         )
         self._publish_velocity(command.linear, command.angular)
 
-    def _tick_cleanup(self) -> None:
-        """Attempt bounded pen-off cleanup before a failed exit."""
-        if not self._entered:
+    def _advance_stroke(self) -> None:
+        """Record completion and select the next layer or terminal state."""
+        previous_color = self._current_stroke.color
+        self.completed_strokes += 1
+        self._stroke_index += 1
+        if self._stroke_index >= len(self._plan.strokes):
+            self._transition(PainterState.PARKING)
+            return
+        if self._current_stroke.color != previous_color:
+            self._transition(PainterState.COLOR_CHANGE)
+        else:
+            self._transition(PainterState.MOVING_TO_STROKE)
+
+    def _tick_pen_up(self) -> None:
+        """Raise the pen after one stroke and advance the plan."""
+        if self.config.dry_run:
+            self._advance_stroke()
+            return
+        if self._phase == '':
+            if self._start_service(
+                'turning pen off',
+                lambda: self._pen_client.call_async(
+                    self._pen_request(True, self._current_stroke.color)),
+            ):
+                self._phase = 'service'
+            return
+        if self._service_result('turning pen off') is not _PENDING:
+            self._advance_stroke()
+
+    def _tick_color_change(self) -> None:
+        """Pause without blocking before beginning the next color layer."""
+        if self._monotonic() >= self._state_deadline:
+            self._transition(PainterState.MOVING_TO_STROKE)
+
+    def _tick_parking(self) -> None:
+        """Teleport the pen-up turtle out of the completed painting."""
+        target = Point(self.config.parking_x, self.config.parking_y)
+        if self._phase == '':
+            request = TeleportAbsolute.Request()
+            request.x = target.x
+            request.y = target.y
+            request.theta = 0.0
+            self._parking_pose_generation = self._pose_generation
+            if self._start_service(
+                'parking turtle',
+                lambda: self._teleport_client.call_async(request),
+            ):
+                self._phase = 'teleport'
+            return
+
+        if self._phase == 'teleport':
+            if self._service_result('parking turtle') is _PENDING:
+                return
+            self._phase = 'pose'
+            self._state_deadline = (
+                self._monotonic() + self.config.pose_timeout_sec)
+
+        if (
+            self._pose_generation > self._parking_pose_generation
+            and self._pose_is_fresh()
+            and position_arrived(
+                Point(self._pose.x, self._pose.y),
+                target,
+                self.config.position_tolerance,
+            )
+        ):
+            if self._plan.strokes:
+                message = 'Painting completed and turtle parked successfully'
+            else:
+                message = 'Empty painting plan completed and turtle parked successfully'
+            self._succeed(message)
+        elif self._monotonic() >= self._state_deadline:
+            self._fail('parked turtle pose was not available in time')
+
+    def _tick(self) -> None:
+        """Advance the complete non-blocking state machine by one tick."""
+        if self.finished:
+            return
+        if self.state == PainterState.IDLE:
+            self.publish_stop()
+            self._transition(PainterState.PREPARING)
+        elif self.state == PainterState.PREPARING:
+            self._tick_preparing()
+        elif self.state == PainterState.MOVING_TO_STROKE:
+            self._tick_moving_to_stroke()
+        elif self.state == PainterState.ALIGNING:
+            self._tick_aligning()
+        elif self.state == PainterState.PEN_DOWN:
+            self._tick_pen_down()
+        elif self.state == PainterState.DRAWING:
+            self._tick_drawing()
+        elif self.state == PainterState.PEN_UP:
+            self._tick_pen_up()
+        elif self.state == PainterState.COLOR_CHANGE:
+            self._tick_color_change()
+        elif self.state == PainterState.PARKING:
+            self._tick_parking()
+        elif self.state == PainterState.ERROR:
+            self._tick_error()
+
+    def _fail(self, reason: str) -> None:
+        """Stop immediately and enter bounded best-effort cleanup."""
+        if self.finished or self.state == PainterState.ERROR:
+            return
+        self.failure_reason = reason
+        self.get_logger().error(reason)
+        if self._future is not None and not self._future.done():
+            self._future.cancel()
+        if (
+            self._planning_future is not None
+            and not self._planning_future.done()
+        ):
+            self._planning_future.cancel()
+        self.publish_stop()
+        self.state = PainterState.ERROR
+        self._phase = ''
+        self._future = None
+        self._error_cleanup_started = False
+        self._state_deadline = (
+            self._monotonic() + self.config.service_timeout_sec)
+        self._shutdown_planner()
+
+    def _tick_error(self) -> None:
+        """Attempt one bounded pen-off request, then finish in ERROR."""
+        if not self._error_cleanup_started:
+            self._error_cleanup_started = True
             if not self._pen_client.service_is_ready():
                 self._finish_failure()
                 return
-            self._start_future(
-                self._pen_client.call_async(self._pen_request(off=True)))
+            color = None
+            if self._plan is not None and self._plan.strokes:
+                stroke_index = min(
+                    self._stroke_index,
+                    len(self._plan.strokes) - 1,
+                )
+                color = self._plan.strokes[stroke_index].color
+            try:
+                self._future = self._pen_client.call_async(
+                    self._pen_request(True, color))
+            except Exception as error:
+                self.get_logger().error(
+                    'pen-off cleanup failed: %s' % error)
+                self._finish_failure()
+                return
+            if self._future is None:
+                self.get_logger().error(
+                    'pen-off cleanup did not create a service request')
+                self._finish_failure()
+                return
+            self._state_deadline = (
+                self._monotonic() + self.config.service_timeout_sec)
             return
         if self._future.done() or self._monotonic() >= self._state_deadline:
             if not self._future.done():
                 self._future.cancel()
             self._finish_failure()
 
-    def _tick(self) -> None:
-        """Advance the non-blocking one-shot state machine."""
-        if self.finished:
-            return
-        if self.state == PainterState.WAITING:
-            self._tick_waiting()
-        elif self.state == PainterState.BACKGROUND:
-            self._tick_background()
-        elif self.state == PainterState.CLEAR:
-            self._tick_simple_service(
-                'clearing canvas',
-                lambda: self._clear_client.call_async(Empty.Request()),
-                PainterState.PEN_OFF_INITIAL,
-            )
-        elif self.state == PainterState.PEN_OFF_INITIAL:
-            self._tick_simple_service(
-                'turning pen off',
-                lambda: self._pen_client.call_async(
-                    self._pen_request(off=True)),
-                PainterState.TELEPORT,
-            )
-        elif self.state == PainterState.TELEPORT:
-            self._tick_teleport()
-        elif self.state == PainterState.WAIT_TELEPORT_POSE:
-            self._tick_wait_teleport_pose()
-        elif self.state == PainterState.ALIGN:
-            self._tick_align()
-        elif self.state == PainterState.PEN_DOWN:
-            self._tick_simple_service(
-                'turning pen on',
-                lambda: self._pen_client.call_async(
-                    self._pen_request(off=False)),
-                PainterState.DRAW,
-            )
-        elif self.state == PainterState.DRAW:
-            self._tick_draw()
-        elif self.state == PainterState.PEN_OFF_FINAL:
-            self._tick_simple_service(
-                'turning pen off',
-                lambda: self._pen_client.call_async(
-                    self._pen_request(off=True)),
-                PainterState.DONE,
-            )
-            if self.state == PainterState.DONE:
-                self.publish_stop()
-                self.finished = True
-                self.exit_code = 0
-                self.get_logger().info(
-                    'Horizontal line completed successfully')
-        elif self.state == PainterState.CLEANUP:
-            self._tick_cleanup()
-
-    def _fail(self, reason: str) -> None:
-        """Stop motion and enter bounded failure cleanup."""
-        if self.finished or self.state == PainterState.CLEANUP:
-            return
-        self.failure_reason = reason
-        self.get_logger().error(reason)
+    def _succeed(self, message: str) -> None:
+        """Stop and terminate successfully in FINISHED."""
         self.publish_stop()
-        self._transition(PainterState.CLEANUP)
+        self.state = PainterState.FINISHED
+        self.finished = True
+        self.exit_code = 0
+        self._timer.cancel()
+        self._shutdown_planner()
+        self.get_logger().info(message)
 
     def _finish_failure(self) -> None:
-        """Finish a failed run after publishing another stop command."""
+        """Publish a final stop and terminate while remaining in ERROR."""
         self.publish_stop()
-        self.state = PainterState.DONE
         self.finished = True
         self.exit_code = 1
+        self._timer.cancel()
+        self._shutdown_planner()
+
+    def _shutdown_planner(self) -> None:
+        """Cancel pending planning and release the owned worker once."""
+        if self._planner_closed:
+            return
+        self._planner_closed = True
+        if (
+            self._planning_future is not None
+            and not self._planning_future.done()
+        ):
+            self._planning_future.cancel()
+        if self._owns_executor:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def destroy_node(self):
+        """Release the planning worker before destroying ROS resources."""
+        if hasattr(self, '_planner_closed'):
+            self._shutdown_planner()
+        return super().destroy_node()
 
     def request_abort(self, reason: str = 'painting interrupted') -> None:
         """Request safe termination from the main loop or a test."""

@@ -11,9 +11,9 @@ from turtlesim_image_painter import ImageProcessor
 
 result = ImageProcessor().process(
     'picture.png',
-    max_width=64,
-    max_height=64,
-    palette_size=8,
+    max_width=80,
+    max_height=80,
+    palette_size=4,
 )
 
 print(result.width, result.height)
@@ -21,7 +21,10 @@ print(result.palette)
 print(result.pixels)
 ```
 
-The processed pixels can then be converted into safe horizontal strokes:
+Palette sizes from 2 through 8 are supported by both the Python and ROS APIs.
+
+The processed pixels can then be converted into safe horizontal or vertical
+strokes:
 
 ```python
 from turtlesim_image_painter import CanvasBounds, StrokeGenerator
@@ -29,6 +32,7 @@ from turtlesim_image_painter import CanvasBounds, StrokeGenerator
 generator = StrokeGenerator(
     bounds=CanvasBounds(1.0, 10.0, 1.0, 10.0),
     exclude_background=True,
+    stroke_orientation='auto',
 )
 generated = generator.generate(result)
 
@@ -37,34 +41,46 @@ print(generated.statistics)
 ```
 
 The image is uniformly scaled and centered inside the configured canvas. Image
-rows are mapped from top to bottom by inverting the Turtlesim Y-axis, and each
-maximal horizontal run of one color becomes a stroke spanning the complete
-logical cell edges. Detected background runs are skipped by default.
+rows are mapped from top to bottom by inverting the Turtlesim Y-axis. In the
+default `auto` orientation, each color layer uses horizontal or vertical runs,
+whichever produces fewer strokes. Tied candidates use the shortest pen-up
+route, with horizontal as the deterministic final tie-breaker. Each stroke
+spans the complete logical cell edges, and detected background runs are skipped
+by default.
 
 The standalone command runs the complete planning pipeline and writes a JSON
 painting plan plus a composite PNG preview next to the input image:
 
 ```bash
-process_image picture.png --path-order snake
+process_image picture.png --colors 4 --stroke-orientation auto \
+  --path-order snake
 ```
 
 The default artifacts are `picture_plan.json` and `picture_preview.png`. Use
 `--plan-output` and `--preview-output` to choose other paths. Colors are grouped
 largest-first by painted pixel count with RGB tie-breaking. Raster order scans
-each group from top-left; snake order reverses both run order and stroke
-endpoints on odd source rows. Reported travel covers pen-up movement between
-strokes, while paint distance covers the strokes themselves.
+each group from top-left. Snake order alternates direction across rows for
+horizontal strokes and columns for vertical strokes. Reported travel covers
+pen-up movement between strokes, while paint distance covers the strokes
+themselves.
 
 Inputs are EXIF-oriented, converted to RGB, composited over white when they
-contain transparency, resized without changing aspect ratio, and quantized
-using median cut. The default ROS parameters are in `config/default.yaml`.
+contain transparency, and resized without changing aspect ratio using Hamming
+downsampling to avoid ringing around sharp artwork. When a dominant background
+is detected, colors within `background_tolerance` of it are consolidated and
+one palette entry is reserved for the exact background; median-cut
+quantization then spends the remaining entries on meaningful foreground
+colors. The tuned defaults are an 80-pixel bounding box, four colors, a
+background tolerance of 24, and a pen width of 6. The default ROS parameters
+are in `config/default.yaml`.
 
-## Draw one line in Turtlesim
+## Paint an image in Turtlesim
 
-Sprint 4 adds a one-shot `painter` node. It clears the canvas, teleports with
-the pen raised, aligns from pose feedback, and draws one configured horizontal
-line. All service calls and motion are asynchronous; completion is determined
-from `/turtle1/pose`, not elapsed sleeps.
+The one-shot `painter` node runs the image pipeline and executes its complete
+multi-color plan. Image processing runs in a background worker, service calls
+are asynchronous, and a control timer advances the painting states. The node
+uses pen-up teleportation between disconnected strokes and pose-controlled
+`cmd_vel` motion while aligning and drawing.
 
 Build the workspace and source ROS 2 Jazzy plus the workspace installation.
 Then start Turtlesim in one terminal:
@@ -73,17 +89,30 @@ Then start Turtlesim in one terminal:
 ros2 run turtlesim turtlesim_node
 ```
 
-In a second terminal, run the painter with the installed defaults:
+In a second terminal, provide an absolute PNG or JPEG path and run the painter:
 
 ```bash
 ros2 run turtlesim_image_painter painter --ros-args \
-  --params-file "$(ros2 pkg prefix turtlesim_image_painter)/share/turtlesim_image_painter/config/default.yaml"
+  --params-file "$(ros2 pkg prefix turtlesim_image_painter)/share/turtlesim_image_painter/config/default.yaml" \
+  -p image_path:=/absolute/path/to/picture.png
 ```
 
-The default run clears to white, draws a red line from `(2.0, 5.5)` to
-`(9.0, 5.5)`, stops the turtle, turns its pen off, logs successful completion,
-and exits. The start and end X coordinates, shared Y coordinate, line and
-background RGB values, pen width, controller gains and limits, tolerances, and
-service/pose timeouts can all be overridden with ROS parameters. Both
-left-to-right and right-to-left lines are supported; equal X endpoints and
-coordinates outside the configured canvas bounds are rejected.
+By default the generated plan JSON and preview PNG are written next to the
+source image. Set `plan_output` and `preview_output` to override those paths.
+The painter clears to the configured background, completes every stroke in one
+color before waiting `color_change_pause_sec` and switching layers, then stops,
+raises the pen, teleports to the configured bottom-left parking position, logs
+completion, and exits. The default controller gains and speed limits are tuned
+for twice the original movement speed. The default pen width is matched to the
+80-pixel planning grid so neighboring strokes visually join instead of leaving
+vertical or horizontal gaps. All settings remain overrideable ROS parameters.
+
+Set `dry_run:=true` to perform the same planning, canvas setup, teleports,
+alignment, drawing route, and final parking while keeping the pen disabled.
+Empty plans are successful: the node still configures and clears the canvas,
+ensures the pen is off, and parks the turtle without requiring an initial pose.
+Service calls, pose feedback, teleport confirmation, alignment, drawing, and
+parking are bounded by the configured timeouts; any unrecoverable error
+publishes a stop immediately and makes one bounded best-effort pen-off request
+before exiting with failure. Override `parking_x` and `parking_y` to select a
+different positive, finite parking position.

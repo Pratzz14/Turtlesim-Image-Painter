@@ -6,48 +6,69 @@ import pytest
 
 from turtlesim_image_painter.models import Point
 from turtlesim_image_painter.turtle_control import (
-    PainterConfig,
     alignment_command,
     angle_arrived,
     distance_between,
     drive_command,
     heading_between,
     normalize_angle,
+    PainterConfig,
     position_arrived,
 )
 
 
-def test_default_configuration_describes_horizontal_red_line():
-    """The shipped demo is a bounded red-on-white horizontal line."""
+def test_default_configuration_describes_image_painter():
+    """Defaults describe image planning and bounded turtle execution."""
     config = PainterConfig()
 
-    assert config.start == Point(2.0, 5.5)
-    assert config.end == Point(9.0, 5.5)
-    assert (config.line_r, config.line_g, config.line_b) == (255, 0, 0)
+    assert config.image_path == ''
+    assert (config.max_width, config.max_height) == (80, 80)
+    assert config.palette_size == 4
+    assert config.background_tolerance == 24
+    assert config.stroke_orientation == 'auto'
+    assert config.bounds.min_x == 1.0
+    assert (config.parking_x, config.parking_y) == (0.5, 0.5)
+    assert config.pen_width == 6
+    assert (
+        config.linear_gain,
+        config.angular_gain,
+        config.max_linear_speed,
+        config.max_angular_speed,
+    ) == (3.0, 12.0, 4.0, 8.0)
     assert (
         config.background_r,
         config.background_g,
         config.background_b,
     ) == (255, 255, 255)
+    assert not config.dry_run
 
 
 @pytest.mark.parametrize(
     'changes,message',
     [
-        ({'start_x': 0.5}, 'start_x'),
-        ({'end_x': 10.5}, 'end_x'),
-        ({'line_y': float('nan')}, 'line_y'),
-        ({'start_x': 4.0, 'end_x': 4.0}, 'different'),
-        ({'line_r': 256}, 'line_r'),
+        ({'max_width': 0}, 'max_width'),
+        ({'palette_size': 1}, 'palette_size'),
+        ({'palette_size': 9}, 'palette_size'),
+        ({'transparency_color': (0, 0)}, 'three channels'),
+        ({'background_threshold': 1.1}, 'background_threshold'),
+        ({'background_tolerance': -1}, 'background_tolerance'),
+        ({'background_tolerance': 256}, 'background_tolerance'),
+        ({'path_order': 'diagonal'}, 'path_order'),
+        ({'stroke_orientation': 'diagonal'}, 'stroke_orientation'),
         ({'background_b': -1}, 'background_b'),
         ({'pen_width': 0}, 'pen_width'),
         ({'canvas_min_x': 5.0, 'canvas_max_x': 5.0}, 'minimums'),
         ({'control_rate_hz': 0.0}, 'control_rate_hz'),
         ({'linear_gain': float('inf')}, 'linear_gain'),
         ({'max_angular_speed': -1.0}, 'max_angular_speed'),
+        ({'parking_x': 0.0}, 'parking_x'),
+        ({'parking_y': float('nan')}, 'parking_y'),
         ({'angle_tolerance': pi + 0.1}, 'angle_tolerance'),
         ({'service_timeout_sec': 0.0}, 'service_timeout_sec'),
         ({'pose_timeout_sec': False}, 'pose_timeout_sec'),
+        ({'movement_timeout_sec': 0.0}, 'movement_timeout_sec'),
+        ({'color_change_pause_sec': -1.0}, 'color_change_pause_sec'),
+        ({'dry_run': 1}, 'dry_run'),
     ],
 )
 def test_configuration_rejects_invalid_parameters(changes, message):
