@@ -1,6 +1,8 @@
 """Shared immutable data models for processing and painting images."""
 
 from dataclasses import dataclass, field
+from math import isfinite
+from numbers import Real
 from typing import Optional, Tuple
 
 
@@ -31,6 +33,29 @@ class Color:
 
 
 PixelMatrix = Tuple[Tuple[Color, ...], ...]
+
+
+@dataclass(frozen=True)
+class CanvasBounds:
+    """Inclusive safe drawing limits in turtlesim coordinates."""
+
+    min_x: float = 1.0
+    max_x: float = 10.0
+    min_y: float = 1.0
+    max_y: float = 10.0
+
+    def __post_init__(self) -> None:
+        """Require finite, increasing limits on both axes."""
+        values = (self.min_x, self.max_x, self.min_y, self.max_y)
+        if any(
+            not isinstance(value, Real)
+            or isinstance(value, bool)
+            or not isfinite(value)
+            for value in values
+        ):
+            raise ValueError('canvas bounds must be finite numbers')
+        if self.min_x >= self.max_x or self.min_y >= self.max_y:
+            raise ValueError('canvas minimums must be less than maximums')
 
 
 @dataclass(frozen=True)
@@ -90,7 +115,7 @@ class PaintingPlan:
     background: Optional[Color] = None
 
     def __post_init__(self) -> None:
-        """Reject nonpositive canvas dimensions."""
+        """Reject nonpositive logical image dimensions."""
         if self.width <= 0 or self.height <= 0:
             raise ValueError('plan dimensions must be positive')
 
@@ -137,3 +162,11 @@ class Statistics:
             raise ValueError('statistics measurements must not be negative')
         if any(count < 0 for _, count in self.color_counts):
             raise ValueError('color counts must not be negative')
+
+
+@dataclass(frozen=True)
+class PlanResult:
+    """A generated painting plan and its logical-pixel statistics."""
+
+    plan: PaintingPlan
+    statistics: Statistics

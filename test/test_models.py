@@ -3,6 +3,7 @@
 import pytest
 
 from turtlesim_image_painter import (
+    CanvasBounds,
     Color,
     PaintingPlan,
     ProcessedImage,
@@ -75,3 +76,21 @@ def test_statistics_rejects_negative_color_counts():
     """Per-color statistics cannot contain a negative count."""
     with pytest.raises(ValueError):
         Statistics(color_counts=((RED, -1),))
+
+
+@pytest.mark.parametrize(
+    'values',
+    [
+        (1.0, 1.0, 1.0, 10.0),
+        (2.0, 1.0, 1.0, 10.0),
+        (1.0, 10.0, 4.0, 4.0),
+        (1.0, 10.0, 5.0, 4.0),
+        (float('nan'), 10.0, 1.0, 10.0),
+        (1.0, float('inf'), 1.0, 10.0),
+        (True, 10.0, 1.0, 10.0),
+    ],
+)
+def test_canvas_bounds_reject_invalid_limits(values):
+    """Canvas limits must be finite numbers in increasing order."""
+    with pytest.raises(ValueError):
+        CanvasBounds(*values)
