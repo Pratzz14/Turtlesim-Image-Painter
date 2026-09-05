@@ -15,6 +15,7 @@ painter:
     path_order: raster
     stroke_orientation: auto
     pen_width: 6
+    auto_pen_width: true
     background_r: 255
     background_g: 255
     background_b: 255

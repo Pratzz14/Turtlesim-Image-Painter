@@ -22,7 +22,7 @@
 
 from collections import Counter
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from typing import Optional, Sequence, Tuple, Union
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -107,7 +107,10 @@ class ImageProcessor:
         )
         if size == image.size:
             return image.copy()
-        return image.resize(size, Image.Resampling.HAMMING)
+        # The painter treats every resized pixel as a discrete color cell.
+        # Interpolating filters invent blended edge colors, which show up as
+        # gray halos around otherwise sharp artwork after quantization.
+        return image.resize(size, Image.Resampling.NEAREST)
 
     @staticmethod
     def quantize_image(
@@ -168,6 +171,93 @@ class ImageProcessor:
             background_value if is_background else next(reduced_pixels)
             for is_background in mask
         ])
+        return ImageProcessor._clean_antialiased_edges(
+            output, background_value)
+
+    @staticmethod
+    def _clean_antialiased_edges(
+        image: Image.Image,
+        background: Tuple[int, int, int],
+    ) -> Image.Image:
+        """Merge edge-only palette colors into adjacent foreground colors."""
+        pixels = list(image.convert('RGB').getdata())
+        width, height = image.size
+        colors = set(pixels)
+        if len(colors) <= 2:
+            return image.copy()
+
+        def neighbors(index):
+            x = index % width
+            y = index // width
+            for offset_y in (-1, 0, 1):
+                for offset_x in (-1, 0, 1):
+                    if offset_x == 0 and offset_y == 0:
+                        continue
+                    neighbor_x = x + offset_x
+                    neighbor_y = y + offset_y
+                    if 0 <= neighbor_x < width and 0 <= neighbor_y < height:
+                        yield pixels[neighbor_y * width + neighbor_x]
+
+        positions = {
+            color: [
+                index for index, pixel in enumerate(pixels)
+                if pixel == color
+            ]
+            for color in colors
+            if color != background
+        }
+        edge_colors = set()
+        for color, indices in positions.items():
+            background_edges = 0
+            foreground_edges = 0
+            interior_pixels = 0
+            for index in indices:
+                adjacent = tuple(neighbors(index))
+                if background in adjacent:
+                    background_edges += 1
+                if any(
+                    pixel != background and pixel != color
+                    for pixel in adjacent
+                ):
+                    foreground_edges += 1
+                if adjacent and all(pixel == color for pixel in adjacent):
+                    interior_pixels += 1
+            count = len(indices)
+            if (
+                background_edges / count >= 0.02
+                and foreground_edges / count >= 0.75
+                and interior_pixels / count <= 0.05
+            ):
+                edge_colors.add(color)
+
+        if not edge_colors:
+            return image.copy()
+
+        cleaned = list(pixels)
+        for index, color in enumerate(pixels):
+            if color not in edge_colors:
+                continue
+            adjacent = Counter(
+                pixel for pixel in neighbors(index)
+                if pixel != background and pixel not in edge_colors
+            )
+            if not adjacent:
+                cleaned[index] = background
+                continue
+            cleaned[index] = min(
+                adjacent,
+                key=lambda candidate: (
+                    -adjacent[candidate],
+                    sum(
+                        (first - second) ** 2
+                        for first, second in zip(color, candidate)
+                    ),
+                    candidate,
+                ),
+            )
+
+        output = Image.new('RGB', image.size)
+        output.putdata(cleaned)
         return output
 
     @staticmethod

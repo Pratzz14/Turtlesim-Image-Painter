@@ -25,7 +25,11 @@ from pathlib import Path
 
 import pytest
 
-from turtlesim_image_painter.configuration import PainterConfig
+from turtlesim_image_painter.configuration import (
+    PainterConfig,
+    recommended_pen_width,
+)
+from turtlesim_image_painter.models import CanvasBounds
 from turtlesim_image_painter.models import Point
 from turtlesim_image_painter.motion_control import (
     alignment_command,
@@ -51,6 +55,7 @@ def test_default_configuration_describes_image_painter():
     assert config.bounds.min_x == 1.0
     assert (config.parking_x, config.parking_y) == (0.5, 0.5)
     assert config.pen_width == 6
+    assert config.auto_pen_width
     assert (
         config.linear_gain,
         config.angular_gain,
@@ -90,6 +95,7 @@ def test_yaml_defaults_match_validated_configuration():
         ({'stroke_orientation': 'diagonal'}, 'stroke_orientation'),
         ({'background_b': -1}, 'background_b'),
         ({'pen_width': 0}, 'pen_width'),
+        ({'auto_pen_width': 1}, 'auto_pen_width'),
         ({'canvas_min_x': 5.0, 'canvas_max_x': 5.0}, 'minimums'),
         ({'control_rate_hz': 0.0}, 'control_rate_hz'),
         ({'linear_gain': float('inf')}, 'linear_gain'),
@@ -111,6 +117,23 @@ def test_configuration_rejects_invalid_parameters(changes, message):
 
     with pytest.raises(ValueError, match=message):
         PainterConfig.from_mapping(values)
+
+
+@pytest.mark.parametrize(
+    'width,height,expected',
+    [
+        (80, 80, 6),
+        (249, 148, 2),
+        (1000, 1000, 1),
+        (1, 1, 255),
+    ],
+)
+def test_recommended_pen_width_tracks_logical_cell_size(
+    width, height, expected,
+):
+    """Automatic brushes stay near one logical cell at every resolution."""
+    assert recommended_pen_width(
+        CanvasBounds(), width, height) == expected
 
 
 def test_heading_and_distance_support_both_horizontal_directions():

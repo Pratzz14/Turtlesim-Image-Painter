@@ -42,7 +42,7 @@ from std_srvs.srv import Empty
 from turtlesim.msg import Pose
 from turtlesim.srv import SetPen, TeleportAbsolute
 
-from .configuration import PainterConfig
+from .configuration import PainterConfig, recommended_pen_width
 from .image_processing import ImageProcessor
 from .models import Color, PaintingPlan, Point
 from .motion_control import (
@@ -201,6 +201,7 @@ class PainterNode(Node):
         self._painted_colors = ()
         self._color_stroke_totals = {}
         self._color_pixel_counts = {}
+        self._effective_pen_width = self.config.pen_width
         self._logged_color = None
         self._completed_color_strokes = 0
         self._started_at: Optional[float] = None
@@ -284,6 +285,26 @@ class PainterNode(Node):
         """Cache pipeline metadata used by progress and final reporting."""
         self._pipeline_result = result
         self._statistics = result.plan_result.statistics
+        processed = result.processed_image
+        if self.config.auto_pen_width:
+            self._effective_pen_width = recommended_pen_width(
+                self.config.bounds,
+                processed.width,
+                processed.height,
+            )
+            pen_mode = 'automatic'
+        else:
+            self._effective_pen_width = self.config.pen_width
+            pen_mode = 'manual'
+        self.get_logger().info(
+            'Brush width: %d pixels (%s for %dx%d processed image)'
+            % (
+                self._effective_pen_width,
+                pen_mode,
+                processed.width,
+                processed.height,
+            )
+        )
         self._painted_colors = tuple(dict.fromkeys(
             stroke.color for stroke in self._plan.strokes
         ))
@@ -417,7 +438,7 @@ class PainterNode(Node):
         request.r = selected.red
         request.g = selected.green
         request.b = selected.blue
-        request.width = self.config.pen_width
+        request.width = self._effective_pen_width
         request.off = int(off)
         return request
 

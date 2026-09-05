@@ -21,7 +21,7 @@ understood and tested independently:
 
 ```text
 PNG/JPEG
-  -> orient, composite transparency, and resize
+  -> orient, composite transparency, and resize without blended edge colors
   -> detect background and quantize the palette
   -> convert logical pixels into color-grouped strokes
   -> save JSON plan and composite PNG preview
@@ -70,7 +70,7 @@ ros2 launch turtlesim_image_painter painter.launch.py \
   image:=/absolute/path/to/image.png
 ```
 
-The `image` argument is required. Two optional convenience arguments override
+The `image` argument is required. Three optional convenience arguments override
 the installed YAML values:
 
 ```bash
@@ -83,7 +83,11 @@ ros2 launch turtlesim_image_painter painter.launch.py \
 - `colors` accepts 2 through 8 and maps to `palette_size`.
 - `resolution` is a positive integer that sets both `max_width` and
   `max_height`. Aspect ratio is preserved inside that square bound.
-- If either optional argument is omitted, its values come from the installed
+- `brush_size` accepts 1 through 255 and disables automatic brush sizing. When
+  omitted, the painter scales the brush to one processed-image cell, keeping
+  high-resolution edges from becoming thick or merged. Add, for example,
+  `brush_size:=2` only when a manual override is useful.
+- If an optional argument is omitted, its values come from the installed
   `config/default.yaml`.
 
 Run `ros2 launch turtlesim_image_painter painter.launch.py --show-args` to
@@ -120,7 +124,8 @@ individual parameters using `-p`.
 | `color_order` | `largest_first` | Paint larger color regions first. |
 | `path_order` | `raster` | Use `raster` or alternating `snake` traversal within layers. |
 | `stroke_orientation` | `auto` | Use `auto`, `horizontal`, or `vertical` runs. |
-| `pen_width` | `6` | Turtlesim pen width in pixels. |
+| `pen_width` | `6` | Manual turtlesim pen width used when automatic sizing is disabled. |
+| `auto_pen_width` | `true` | Scale the pen to one processed-image cell. Launch `brush_size` turns this off. |
 | `background_r/g/b` | `255/255/255` | Canvas fallback when detection is absent or exclusion is disabled. |
 | `canvas_min_x/max_x` | `1.0/10.0` | Safe horizontal painting limits. |
 | `canvas_min_y/max_y` | `1.0/10.0` | Safe vertical painting limits. |
@@ -141,7 +146,10 @@ When `exclude_background` is enabled and a dominant background is detected,
 the painter sets turtlesim to that detected RGB before clearing. If detection
 finds nothing, or exclusion is disabled, the configured `background_r/g/b`
 fallback is used. Empty foreground plans still clear the canvas and park
-safely.
+safely. Palette colors that occur almost exclusively as a one-cell transition
+between the background and a solid foreground color are treated as source
+anti-aliasing and merged into the neighboring foreground rather than painted
+as a gray halo.
 
 ## Process without ROS
 
@@ -191,7 +199,10 @@ print(planned.statistics)
   direct node run when another destination is needed.
 - **Painter times out waiting for services or pose**: ensure only one turtlesim
   instance owns `/turtlesim` and `/turtle1`, then restart the launch.
-- **Painting has gaps**: lower the logical resolution or increase `pen_width`.
+- **Painting looks thick or loses small holes**: leave `brush_size` omitted for
+  automatic sizing, or choose a smaller value such as `brush_size:=2`.
+- **Painting has gaps**: lower the logical resolution or set `brush_size` one
+  pixel above the automatically reported brush width.
 - **Painting is slow**: lower `resolution`, choose fewer colors, or tune speed
   limits conservatively. `dry_run:=true` is useful for route debugging through
   a direct node run.

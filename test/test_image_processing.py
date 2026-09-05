@@ -120,6 +120,21 @@ def test_resize_does_not_upscale_by_default(processor):
     assert processor.resize_image(image, 100, 100).size == (10, 5)
 
 
+def test_resize_does_not_invent_gray_pixels_around_sharp_edges(processor):
+    """Nearest-neighbor resizing preserves a hard two-color boundary."""
+    image = Image.new('RGB', (200, 200), 'white')
+    for y in range(40, 160):
+        for x in range(40, 160):
+            image.putpixel((x, y), (0, 0, 0))
+
+    resized = processor.resize_image(image, 20, 20)
+
+    assert set(resized.getdata()) == {
+        (0, 0, 0),
+        (255, 255, 255),
+    }
+
+
 @pytest.mark.parametrize('palette_size', [2, 8])
 def test_quantization_limits_palette(processor, palette_size):
     """Median-cut output never exceeds the requested palette size."""
@@ -185,6 +200,53 @@ def test_background_aware_quantization_handles_background_only(processor):
     )
 
     assert set(quantized.getdata()) == {(255, 255, 255)}
+
+
+def test_quantization_merges_antialiased_borders_into_foreground(processor):
+    """Edge-only neutral and tinted rings do not become painted colors."""
+    image = Image.new('RGB', (19, 9), 'white')
+    for y in range(1, 8):
+        for x in range(1, 8):
+            image.putpixel((x, y), (160, 160, 160))
+        for x in range(11, 18):
+            image.putpixel((x, y), (120, 170, 200))
+    for y in range(2, 7):
+        for x in range(2, 7):
+            image.putpixel((x, y), (0, 0, 0))
+        for x in range(12, 17):
+            image.putpixel((x, y), (0, 90, 145))
+
+    quantized = processor.quantize_image(
+        image,
+        5,
+        background=Color(255, 255, 255),
+        background_tolerance=0,
+    )
+
+    assert set(quantized.getdata()) == {
+        (0, 0, 0),
+        (0, 90, 145),
+        (255, 255, 255),
+    }
+
+
+def test_quantization_preserves_isolated_gray_foreground(processor):
+    """A gray detail without another foreground neighbor remains paintable."""
+    image = Image.new('RGB', (5, 5), 'white')
+    for x in range(1, 4):
+        image.putpixel((x, 2), (128, 128, 128))
+
+    quantized = processor.quantize_image(
+        image,
+        2,
+        background=Color(255, 255, 255),
+        background_tolerance=0,
+    )
+
+    assert set(quantized.getdata()) == {
+        (128, 128, 128),
+        (255, 255, 255),
+    }
 
 
 @pytest.mark.parametrize('tolerance', [-1, 256, 1.5, True])

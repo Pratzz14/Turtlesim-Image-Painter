@@ -63,25 +63,40 @@ def test_launch_argument_mapping_applies_colors_and_square_resolution():
         }
 
 
+def test_launch_argument_mapping_applies_manual_brush_size():
+    """A public brush size disables automatic pen-width selection."""
+    module = load_launch_module()
+
+    assert module._painter_parameter_overrides(
+        '/tmp/image.png', brush_size='2') == {
+            'image_path': '/tmp/image.png',
+            'pen_width': 2,
+            'auto_pen_width': False,
+        }
+
+
 @pytest.mark.parametrize(
-    'colors,resolution,message',
+    'colors,resolution,brush_size,message',
     [
-        ('1', '', 'colors'),
-        ('9', '', 'colors'),
-        ('red', '', 'colors'),
-        ('', '0', 'resolution'),
-        ('', 'large', 'resolution'),
+        ('1', '', '', 'colors'),
+        ('9', '', '', 'colors'),
+        ('red', '', '', 'colors'),
+        ('', '0', '', 'resolution'),
+        ('', 'large', '', 'resolution'),
+        ('', '', '0', 'brush_size'),
+        ('', '', '256', 'brush_size'),
+        ('', '', 'wide', 'brush_size'),
     ],
 )
 def test_launch_argument_mapping_rejects_invalid_values(
-    colors, resolution, message,
+    colors, resolution, brush_size, message,
 ):
     """Invalid launch values fail before the painter process starts."""
     module = load_launch_module()
 
     with pytest.raises(ValueError, match=message):
         module._painter_parameter_overrides(
-            '/tmp/image.png', colors, resolution)
+            '/tmp/image.png', colors, resolution, brush_size)
 
 
 def test_launch_description_exposes_arguments_and_both_nodes(
@@ -103,10 +118,13 @@ def test_launch_description_exposes_arguments_and_both_nodes(
     }
     nodes = [action for action in actions if isinstance(action, Node)]
 
-    assert set(declarations) == {'image', 'colors', 'resolution'}
+    assert set(declarations) == {
+        'image', 'colors', 'resolution', 'brush_size',
+    }
     assert declarations['image'].default_value is None
     assert declarations['colors'].default_value is not None
     assert declarations['resolution'].default_value is not None
+    assert declarations['brush_size'].default_value is not None
     assert [(node.node_package, node.node_executable) for node in nodes] == [
         ('turtlesim', 'turtlesim_node'),
     ]
@@ -117,6 +135,7 @@ def test_launch_description_exposes_arguments_and_both_nodes(
         'image': '/tmp/image.png',
         'colors': '6',
         'resolution': '48',
+        'brush_size': '',
     })
     painter_nodes = module._launch_painter(context)
     assert [(node.node_package, node.node_executable)

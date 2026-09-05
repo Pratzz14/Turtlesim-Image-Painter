@@ -27,11 +27,39 @@ unit test. The node's job is to declare parameters and take a snapshot;
 """
 
 from dataclasses import dataclass
-from math import isfinite, pi
+from math import ceil, isfinite, pi
 from numbers import Real
 from typing import Mapping, Tuple
 
 from .models import CanvasBounds
+
+
+TURTLESIM_PIXELS_PER_UNIT = 45.0
+
+
+def recommended_pen_width(
+    bounds: CanvasBounds,
+    image_width: int,
+    image_height: int,
+) -> int:
+    """Return a pen width that covers one processed-image cell."""
+    if not isinstance(bounds, CanvasBounds):
+        raise TypeError('bounds must be CanvasBounds')
+    for name, value in (
+        ('image_width', image_width),
+        ('image_height', image_height),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f'{name} must be a positive integer')
+    cell_size = min(
+        (bounds.max_x - bounds.min_x) / image_width,
+        (bounds.max_y - bounds.min_y) / image_height,
+    )
+    # SetPen width is expressed in display pixels, while stroke coordinates
+    # use turtlesim world units. Rounding upward prevents hairline gaps between
+    # adjacent logical rows without allowing a wide brush to merge them.
+    width = ceil(cell_size * TURTLESIM_PIXELS_PER_UNIT)
+    return max(1, min(255, width))
 
 
 @dataclass(frozen=True)
@@ -51,6 +79,7 @@ class PainterConfig:
     color_order: str = 'largest_first'
     path_order: str = 'raster'
     pen_width: int = 6
+    auto_pen_width: bool = True
     background_r: int = 255
     background_g: int = 255
     background_b: int = 255
@@ -145,7 +174,9 @@ class PainterConfig:
         ):
             raise ValueError('pen_width must be an integer from 1 to 255')
 
-        for name in ('allow_upscale', 'exclude_background', 'dry_run'):
+        for name in (
+            'allow_upscale', 'exclude_background', 'auto_pen_width', 'dry_run',
+        ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f'{name} must be a boolean')
         if (

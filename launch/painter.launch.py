@@ -49,18 +49,27 @@ def _optional_integer(value, name, minimum=1, maximum=None):
     return parsed
 
 
-def _painter_parameter_overrides(image, colors='', resolution=''):
+def _painter_parameter_overrides(
+    image,
+    colors='',
+    resolution='',
+    brush_size='',
+):
     """Map the public launch arguments onto painter ROS parameters."""
     if not image.strip():
         raise ValueError('image must not be empty')
     parameters = {'image_path': image}
     palette_size = _optional_integer(colors, 'colors', 2, 8)
     maximum_size = _optional_integer(resolution, 'resolution')
+    pen_width = _optional_integer(brush_size, 'brush_size', 1, 255)
     if palette_size is not None:
         parameters['palette_size'] = palette_size
     if maximum_size is not None:
         parameters['max_width'] = maximum_size
         parameters['max_height'] = maximum_size
+    if pen_width is not None:
+        parameters['pen_width'] = pen_width
+        parameters['auto_pen_width'] = False
     return parameters
 
 
@@ -72,6 +81,7 @@ def _launch_painter(context):
         LaunchConfiguration('image').perform(context),
         LaunchConfiguration('colors').perform(context),
         LaunchConfiguration('resolution').perform(context),
+        LaunchConfiguration('brush_size').perform(context),
     )
     configuration = Path(
         get_package_share_directory(PACKAGE_NAME),
@@ -107,6 +117,12 @@ def generate_launch_description():
             default_value='',
             description=(
                 'Optional positive square maximum; YAML defaults if omitted.'),
+        ),
+        DeclareLaunchArgument(
+            'brush_size',
+            default_value='',
+            description=(
+                'Optional pen width from 1 to 255; automatic if omitted.'),
         ),
         Node(
             package='turtlesim',

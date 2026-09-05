@@ -351,6 +351,34 @@ def test_node_declares_every_supported_parameter(ros_context):
         node.destroy_node()
 
 
+def test_automatic_brush_width_uses_processed_resolution(ros_context):
+    """Preparation scales the pen to one logical image cell."""
+    node = make_node(_FakeClock(), [], ros_context, [])
+    try:
+        prepare(node)
+
+        assert node._effective_pen_width == 203
+        assert node._pen_client.requests[0].width == 203
+    finally:
+        node.destroy_node()
+
+
+def test_manual_brush_width_overrides_automatic_selection(ros_context):
+    """Explicit manual configuration reaches turtlesim unchanged."""
+    node = make_node(
+        _FakeClock(), [], ros_context, [],
+        auto_pen_width=False,
+        pen_width=2,
+    )
+    try:
+        prepare(node)
+
+        assert node._effective_pen_width == 2
+        assert node._pen_client.requests[0].width == 2
+    finally:
+        node.destroy_node()
+
+
 def test_empty_image_path_rejects_node(ros_context):
     """The painter requires an explicit source image."""
     with pytest.raises(ValueError, match='image_path'):
